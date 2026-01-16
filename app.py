@@ -25,7 +25,7 @@ DEPARTMENT_MAP = {
 PRODUCT_GROUPS = {
     "PIPING & FITTINGS": ["FLANGE", "PIPE", "ELBOW", "TEE", "UNION", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
     "VALVES & ACTUATORS": ["BALL VALVE", "GATE VALVE", "PLUG VALVE", "CHECK VALVE", "GLOBE VALVE", "CONTROL VALVE", "VALVE", "ACTUATOR", "COCK"],
-    "FASTENERS & SEALS": ["STUD", "BOLT", "NUT", "WASHER", "GASKET", "O-RING", "O RING", "MECHANICAL SEAL", "MECH SEAL", "SEAL", "JOINT"],
+    "FASTENERS & SEALS": ["STUD", "BOLT", "NUT", "WASHER", "GASKET", "O RING", "MECHANICAL SEAL", "SEAL", "JOINT"],
     "ELECTRICAL & INSTR.": ["TRANSMITTER", "CABLE", "WIRE", "GAUGE", "SENSOR", "CONNECTOR", "SWITCH", "TERMINAL", "INSTRUMENT"],
     "TOOLS & HARDWARE": ["PLIER", "CUTTING PLIER", "STRIPPER", "WIRE STRIPPER", "WRENCH", "SPANNER", "HAMMER", "FILE", "SAW", "TOOL", "CHISEL", "CUTTER", "TAPE MEASURE", "MEASURING TAPE", "BIT", "DRILL BIT"],
     "CONSUMABLES & GENERAL": ["BRUSH", "PAINT BRUSH", "TAPE", "ADHESIVE", "HOSE", "SAFETY GLOVE", "GLOVE", "CLEANER", "PAINT", "CEMENT", "STICKER", "CHALK"],
@@ -41,6 +41,8 @@ SPEC_TRAPS = {
 # --- AI UTILITIES ---
 def clean_description(text):
     text = str(text).upper().replace('"', ' ')
+    text = text.replace("O-RING", "O RING")
+    text = text.replace("MECH-SEAL", "MECHANICAL SEAL").replace("MECH SEAL", "MECHANICAL SEAL")
     text = re.sub(r'[^A-Z0-9\s./-]', ' ', text)
     return re.sub(r'\s+', ' ', text).strip()
 
