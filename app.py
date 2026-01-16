@@ -106,7 +106,7 @@ def normalize_confidence_scores(scores):
         return scores
     min_score = scores.min()
     if max_score == min_score:
-        return pd.Series(np.full(len(scores), HF_CONFIDENCE_MAX_TARGET), index=scores.index)
+        return pd.Series(np.full(len(scores), max(max_score, HF_CONFIDENCE_MIN_TARGET)), index=scores.index)
     scaled = (scores - min_score) / (max_score - min_score)
     return (scaled * (HF_CONFIDENCE_MAX_TARGET - HF_CONFIDENCE_MIN_TARGET) + HF_CONFIDENCE_MIN_TARGET).round(4)
 
@@ -266,7 +266,12 @@ def run_intelligent_audit(file_path, enable_hf_models=False):
 
     standard_desc = df['Standard_Desc'].tolist() if enable_hf_models else None
     hf_inputs = (
-        (df['Part_Noun'].fillna('') + " " + df['Standard_Desc'].fillna('')).str.strip().tolist()
+        df['Part_Noun']
+        .fillna('')
+        .str.cat(df['Standard_Desc'].fillna(''), sep=' ')
+        .str.replace(r'\s+', ' ', regex=True)
+        .str.strip()
+        .tolist()
         if enable_hf_models else None
     )
 
