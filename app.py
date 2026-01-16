@@ -20,6 +20,10 @@ st.set_page_config(page_title="AI Inventory Auditor Pro", layout="wide", page_ic
 
 # --- KNOWLEDGE BASE: DOMAIN LOGIC ---
 DEFAULT_PRODUCT_GROUP = "Consumables & General"
+MIN_DISTANCE_THRESHOLD = 1e-8
+COMPARISON_WINDOW_SIZE = 50
+FUZZY_SIMILARITY_THRESHOLD = 0.85
+SEMANTIC_SIMILARITY_THRESHOLD = 0.9
 
 PRODUCT_GROUPS = {
     "Piping & Fittings": ["FLANGE", "PIPE", "ELBOW", "TEE", "UNION", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
@@ -169,7 +173,7 @@ def run_intelligent_audit(file_path):
         df['HF_Cluster_ID'] = kmeans_hf.fit_predict(embeddings)
         hf_dists = kmeans_hf.transform(embeddings)
         max_dist = np.max(hf_dists, axis=1)
-        max_dist = np.where(max_dist == 0, 1e-8, max_dist)
+        max_dist = np.where(max_dist == 0, MIN_DISTANCE_THRESHOLD, max_dist)
         df['HF_Cluster_Confidence'] = (1 - (np.min(hf_dists, axis=1) / max_dist)).round(4)
         iso_hf = IsolationForest(contamination=0.04, random_state=42)
         df['HF_Anomaly_Flag'] = iso_hf.fit_predict(embeddings)
@@ -361,10 +365,10 @@ with page[2]:
         fuzzy_list = []
         recs = df.to_dict('records')
         for i in range(len(recs)):
-            for j in range(i + 1, min(i + 50, len(recs))): # Smaller window for real-time speed
+            for j in range(i + 1, min(i + COMPARISON_WINDOW_SIZE, len(recs))): # Smaller window for real-time speed
                 r1, r2 = recs[i], recs[j]
                 sim = SequenceMatcher(None, r1['Standard_Desc'], r2['Standard_Desc']).ratio()
-                if sim > 0.85:
+                if sim > FUZZY_SIMILARITY_THRESHOLD:
                     dna1, dna2 = r1['Tech_DNA'], r2['Tech_DNA']
                     is_variant = (dna1['numbers'] != dna2['numbers']) or (dna1['attributes'] != dna2['attributes'])
                     fuzzy_list.append({
@@ -387,7 +391,7 @@ with page[2]:
             records = df.reset_index(drop=True)
             recs = records.to_dict('records')
             embeddings = records['HF_Embedding'].tolist()
-            window_size = 50  # Keep comparisons lightweight for UI responsiveness.
+            window_size = COMPARISON_WINDOW_SIZE  # Keep comparisons lightweight for UI responsiveness.
             if any(e is None for e in embeddings):
                 st.info("Semantic duplicate detection unavailable (HF embeddings incomplete).")
                 sem_list = []
@@ -395,7 +399,7 @@ with page[2]:
                 for i in range(len(recs)):
                     for j in range(i + 1, min(i + window_size, len(recs))):
                         sim = float(np.dot(embeddings[i], embeddings[j]))  # Cosine similarity on normalized embeddings.
-                        if sim > 0.9:
+                        if sim > SEMANTIC_SIMILARITY_THRESHOLD:
                             sem_list.append({
                                 'ID A': recs[i][id_col],
                                 'ID B': recs[j][id_col],
