@@ -31,6 +31,9 @@ HF_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 HF_INFERENCE_API_URL = "https://api-inference.huggingface.co/models"
 HF_INFERENCE_TIMEOUT = 30
 ENABLE_HF_MODELS = os.getenv("ENABLE_HF_MODELS", "false").lower() == "true"
+HF_CONFIDENCE_MIN_THRESHOLD = 0.8
+HF_CONFIDENCE_MIN_TARGET = 0.6
+HF_CONFIDENCE_MAX_TARGET = 0.98
 
 PRODUCT_GROUPS = {
     "Piping & Fittings": ["FLANGE", "PIPE", "ELBOW", "TEE", "UNION", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
@@ -95,6 +98,40 @@ def apply_distance_floor(distances, min_threshold=MIN_DISTANCE_THRESHOLD):
     max_dist = np.max(distances, axis=1)
     return np.where(max_dist == 0, min_threshold, max_dist)
 
+def normalize_confidence_scores(scores):
+    if not isinstance(scores, pd.Series):
+        scores = pd.Series(scores)
+    if scores.empty:
+        return scores
+    max_score = scores.max()
+    if max_score >= HF_CONFIDENCE_MIN_THRESHOLD:
+        return scores
+    min_score = scores.min()
+    if max_score == min_score:
+        return pd.Series(np.full(len(scores), max(max_score, HF_CONFIDENCE_MIN_TARGET)), index=scores.index)
+    scaled = (scores - min_score) / (max_score - min_score)
+    return (scaled * (HF_CONFIDENCE_MAX_TARGET - HF_CONFIDENCE_MIN_TARGET) + HF_CONFIDENCE_MIN_TARGET).round(4)
+
+def build_fuzzy_duplicates(df, id_col):
+    fuzzy_list = []
+    recs = df.to_dict('records')
+    for i in range(len(recs)):
+        for j in range(i + 1, min(i + COMPARISON_WINDOW_SIZE, len(recs))):
+            r1, r2 = recs[i], recs[j]
+            desc1 = r1.get('Standard_Desc') or ''
+            desc2 = r2.get('Standard_Desc') or ''
+            sim = SequenceMatcher(None, desc1, desc2).ratio()
+            if sim > FUZZY_SIMILARITY_THRESHOLD:
+                dna1 = r1.get('Tech_DNA') or {'numbers': set(), 'attributes': {}}
+                dna2 = r2.get('Tech_DNA') or {'numbers': set(), 'attributes': {}}
+                is_variant = (dna1['numbers'] != dna2['numbers']) or (dna1['attributes'] != dna2['attributes'])
+                fuzzy_list.append({
+                    'ID A': r1[id_col], 'ID B': r2[id_col],
+                    'Desc A': desc1, 'Desc B': desc2,
+                    'Match %': f"{sim:.1%}", 'Verdict': "🛠️ Variant" if is_variant else "🚨 Duplicate"
+                })
+    return fuzzy_list
+
 def get_hf_secret(key):
     try:
         return st.secrets[key]
@@ -150,7 +187,10 @@ def run_hf_zero_shot(texts, labels):
             batch = texts[start:start + HF_BATCH_SIZE]
             payload = {
                 "inputs": batch,
-                "parameters": {"candidate_labels": labels},
+                "parameters": {
+                    "candidate_labels": labels,
+                    "hypothesis_template": "This industrial inventory item is {}"
+                },
                 "options": {"wait_for_model": True}
             }
             batch_results = call_hf_inference(
@@ -230,15 +270,25 @@ def run_intelligent_audit(file_path, enable_hf_models=False):
     df['Anomaly_Flag'] = iso.fit_predict(tfidf_matrix) # Using tfidf for complexity-based anomalies
 
     standard_desc = df['Standard_Desc'].tolist() if enable_hf_models else None
+    hf_inputs = (
+        df['Part_Noun']
+        .fillna('')
+        .str.cat(df['Standard_Desc'].fillna(''), sep=' ')
+        .str.replace(r'\s+', ' ', regex=True)
+        .str.strip()
+        .tolist()
+        if enable_hf_models else None
+    )
 
     # Hugging Face Zero-Shot Classification
-    hf_results = run_hf_zero_shot(standard_desc, list(PRODUCT_GROUPS.keys())) if enable_hf_models else None
+    hf_results = run_hf_zero_shot(hf_inputs, list(PRODUCT_GROUPS.keys())) if enable_hf_models else None
     if hf_results:
         df['HF_Product_Group'] = [res['labels'][0] for res in hf_results]
         df['HF_Product_Confidence'] = [round(res['scores'][0], 4) for res in hf_results]
     else:
         df['HF_Product_Group'] = df['Product_Group']
         df['HF_Product_Confidence'] = df['Confidence']
+    df['HF_Product_Confidence'] = normalize_confidence_scores(df['HF_Product_Confidence'])
 
     # Hugging Face Embeddings for Clustering/Anomaly
     embeddings = compute_embeddings(standard_desc) if enable_hf_models else None
@@ -296,11 +346,12 @@ with page[0]:
     st.markdown("---")
     
     # KPI Row
+    fuzzy_list = build_fuzzy_duplicates(df, id_col)
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     kpi1.metric("📦 SKUs Analyzed", len(df))
     kpi2.metric("🎯 Mean HF Confidence", f"{df['HF_Product_Confidence'].mean():.1%}")
     kpi3.metric("⚠️ HF Anomalies Found", len(df[df['HF_Anomaly_Flag'] == -1]))
-    kpi4.metric("🔄 Duplicate Pairs", "Audit Required")
+    kpi4.metric("🔄 Duplicate Pairs", len(fuzzy_list))
 
     st.markdown("---")
     
@@ -432,20 +483,7 @@ with page[2]:
         st.info("System identifies items with >85% text similarity but differentiates based on numeric specs (Size/Gender).")
         
         # Calculate fuzzy duplicates for the current view
-        fuzzy_list = []
-        recs = df.to_dict('records')
-        for i in range(len(recs)):
-            for j in range(i + 1, min(i + COMPARISON_WINDOW_SIZE, len(recs))): # Smaller window for real-time speed
-                r1, r2 = recs[i], recs[j]
-                sim = SequenceMatcher(None, r1['Standard_Desc'], r2['Standard_Desc']).ratio()
-                if sim > FUZZY_SIMILARITY_THRESHOLD:
-                    dna1, dna2 = r1['Tech_DNA'], r2['Tech_DNA']
-                    is_variant = (dna1['numbers'] != dna2['numbers']) or (dna1['attributes'] != dna2['attributes'])
-                    fuzzy_list.append({
-                        'ID A': r1[id_col], 'ID B': r2[id_col],
-                        'Desc A': r1['Standard_Desc'], 'Desc B': r2['Standard_Desc'],
-                        'Match %': f"{sim:.1%}", 'Verdict': "🛠️ Variant" if is_variant else "🚨 Duplicate"
-                    })
+        fuzzy_list = build_fuzzy_duplicates(df, id_col)
         
         if fuzzy_list:
             st.dataframe(pd.DataFrame(fuzzy_list), use_container_width=True, height=400)
