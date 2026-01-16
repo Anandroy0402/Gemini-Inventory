@@ -3,7 +3,9 @@ import pandas as pd
 import numpy as np
 import re
 import os
+import json
 from difflib import SequenceMatcher
+from urllib import request, error
 
 # Advanced AI/ML Imports
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -23,6 +25,9 @@ COMPARISON_WINDOW_SIZE = 50  # Windowed comparisons keep duplicate checks lightw
 FUZZY_SIMILARITY_THRESHOLD = 0.85
 SEMANTIC_SIMILARITY_THRESHOLD = 0.9
 HF_BATCH_SIZE = 16
+HF_ZERO_SHOT_MODEL = "facebook/bart-large-mnli"
+HF_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+HF_INFERENCE_API_URL = "https://api-inference.huggingface.co/models"
 ENABLE_HF_MODELS = os.getenv("ENABLE_HF_MODELS", "false").lower() == "true"
 
 PRODUCT_GROUPS = {
@@ -88,27 +93,45 @@ def apply_distance_floor(distances, min_threshold=MIN_DISTANCE_THRESHOLD):
     max_dist = np.max(distances, axis=1)
     return np.where(max_dist == 0, min_threshold, max_dist)
 
-@st.cache_resource
-def get_zero_shot_classifier():
+def get_hf_secret(key):
     try:
-        from transformers import pipeline
-        return pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-    except (OSError, ImportError, ValueError):
-        st.warning("Hugging Face classifier unavailable; using existing categories.")
+        return st.secrets[key]
+    except (AttributeError, KeyError):
         return None
 
-@st.cache_resource
-def get_sentence_model():
+def get_hf_token():
+    return (
+        os.getenv("HF_TOKEN")
+        or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+        or get_hf_secret("HF_TOKEN")
+        or get_hf_secret("HUGGINGFACEHUB_API_TOKEN")
+    )
+
+def call_hf_inference(model, payload, token, warning_message):
+    if not token:
+        st.warning("Hugging Face token missing; skipping hosted inference.")
+        return None
+    data = json.dumps(payload).encode("utf-8")
+    req = request.Request(
+        f"{HF_INFERENCE_API_URL}/{model}",
+        data=data,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    )
     try:
-        from sentence_transformers import SentenceTransformer
-        return SentenceTransformer("all-MiniLM-L6-v2")
-    except (OSError, ImportError, ValueError):
-        st.warning("Sentence-transformer model unavailable; falling back to TF-IDF signals.")
+        with request.urlopen(req, timeout=60) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        if isinstance(result, dict) and result.get("error"):
+            st.warning(warning_message)
+            return None
+        return result
+    except (error.HTTPError, error.URLError, TimeoutError, ValueError):
+        st.warning(warning_message)
         return None
 
 def run_hf_zero_shot(texts, labels):
-    classifier = get_zero_shot_classifier()
-    if not classifier:
+    token = get_hf_token()
+    if not token:
+        st.warning("Hugging Face token missing; skipping hosted classification.")
         return None
     if isinstance(texts, str):
         texts = [texts]
@@ -116,7 +139,19 @@ def run_hf_zero_shot(texts, labels):
         results = []
         for start in range(0, len(texts), HF_BATCH_SIZE):
             batch = texts[start:start + HF_BATCH_SIZE]
-            batch_results = classifier(batch, candidate_labels=labels)
+            payload = {
+                "inputs": batch,
+                "parameters": {"candidate_labels": labels},
+                "options": {"wait_for_model": True}
+            }
+            batch_results = call_hf_inference(
+                HF_ZERO_SHOT_MODEL,
+                payload,
+                token,
+                "Hugging Face classification failed; using existing categories."
+            )
+            if not batch_results:
+                return None
             if isinstance(batch_results, dict):
                 batch_results = [batch_results]
             results.extend(batch_results)
@@ -126,11 +161,27 @@ def run_hf_zero_shot(texts, labels):
         return None
 
 def compute_embeddings(texts):
-    model = get_sentence_model()
-    if not model:
+    token = get_hf_token()
+    if not token:
+        st.warning("Hugging Face token missing; skipping hosted embeddings.")
         return None
     try:
-        embeddings = model.encode(texts, show_progress_bar=False, batch_size=HF_BATCH_SIZE)
+        embeddings = []
+        for start in range(0, len(texts), HF_BATCH_SIZE):
+            batch = texts[start:start + HF_BATCH_SIZE]
+            payload = {"inputs": batch, "options": {"wait_for_model": True}}
+            batch_embeddings = call_hf_inference(
+                HF_EMBEDDING_MODEL,
+                payload,
+                token,
+                "Embedding generation failed; falling back to TF-IDF signals."
+            )
+            if not batch_embeddings:
+                return None
+            if isinstance(batch_embeddings, list) and batch_embeddings and isinstance(batch_embeddings[0], (int, float)):
+                batch_embeddings = [batch_embeddings]
+            embeddings.extend(batch_embeddings)
+        embeddings = np.array(embeddings, dtype=float)
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms[norms == 0] = 1
         return embeddings / norms
