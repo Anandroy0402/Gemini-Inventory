@@ -17,19 +17,16 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="AI Inventory Auditor Pro", layout="wide", page_icon="🛡️")
 
 # --- KNOWLEDGE BASE: DOMAIN LOGIC ---
-DEPARTMENT_MAP = {
-    'TL': 'TOOLS & EQUIPMENT', 'IN': 'INSTRUMENTATION', 'CN': 'CONSUMABLES', 
-    'SP': 'SPARE PARTS', 'BM': 'CIVIL/BUILDING', 'PS': 'PROJECT STORES', 'IT': 'IT'
-}
+DEFAULT_PRODUCT_GROUP = "Consumables & General"
 
 PRODUCT_GROUPS = {
-    "PIPING & FITTINGS": ["FLANGE", "PIPE", "ELBOW", "TEE", "UNION", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
-    "VALVES & ACTUATORS": ["BALL VALVE", "GATE VALVE", "PLUG VALVE", "CHECK VALVE", "GLOBE VALVE", "CONTROL VALVE", "VALVE", "ACTUATOR", "COCK"],
-    "FASTENERS & SEALS": ["STUD", "BOLT", "NUT", "WASHER", "GASKET", "O RING", "MECHANICAL SEAL", "SEAL", "JOINT"],
-    "ELECTRICAL & INSTR.": ["TRANSMITTER", "CABLE", "WIRE", "GAUGE", "SENSOR", "CONNECTOR", "SWITCH", "TERMINAL", "INSTRUMENT"],
-    "TOOLS & HARDWARE": ["PLIER", "CUTTING PLIER", "STRIPPER", "WIRE STRIPPER", "WRENCH", "SPANNER", "HAMMER", "FILE", "SAW", "TOOL", "CHISEL", "CUTTER", "TAPE MEASURE", "MEASURING TAPE", "BIT", "DRILL BIT"],
-    "CONSUMABLES & GENERAL": ["BRUSH", "PAINT BRUSH", "TAPE", "ADHESIVE", "HOSE", "SAFETY GLOVE", "GLOVE", "CLEANER", "PAINT", "CEMENT", "STICKER", "CHALK"],
-    "SPECIALIZED SPARES": ["FILTER", "BEARING", "PUMP", "MOTOR", "CARTRIDGE", "IMPELLER", "SPARE"]
+    "Piping & Fittings": ["FLANGE", "PIPE", "ELBOW", "TEE", "UNION", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
+    "Valves & Actuators": ["BALL VALVE", "GATE VALVE", "PLUG VALVE", "CHECK VALVE", "GLOBE VALVE", "CONTROL VALVE", "VALVE", "ACTUATOR", "COCK"],
+    "Fasteners & Seals": ["STUD", "BOLT", "NUT", "WASHER", "GASKET", "O RING", "MECHANICAL SEAL", "SEAL", "JOINT"],
+    "Electrical & Instruments": ["TRANSMITTER", "CABLE", "WIRE", "GAUGE", "SENSOR", "CONNECTOR", "SWITCH", "TERMINAL", "INSTRUMENT", "CAMERA"],
+    "Tools & Hardware": ["PLIER", "CUTTING PLIER", "STRIPPER", "WIRE STRIPPER", "WRENCH", "SPANNER", "HAMMER", "FILE", "SAW", "TOOL", "CHISEL", "CUTTER", "TAPE MEASURE", "MEASURING TAPE", "BIT", "DRILL BIT"],
+    "Consumables & General": ["BRUSH", "PAINT BRUSH", "TAPE", "ADHESIVE", "HOSE", "SAFETY GLOVE", "GLOVE", "CLEANER", "PAINT", "CEMENT", "STICKER", "CHALK"],
+    "Specialized Spares": ["FILTER", "BEARING", "PUMP", "MOTOR", "CARTRIDGE", "IMPELLER", "SPARE"]
 }
 
 SPEC_TRAPS = {
@@ -75,7 +72,7 @@ def map_product_group(noun):
         for keyword in keywords:
             if re.search(token_pattern(keyword), noun):
                 return group
-    return "UNMAPPED"
+    return DEFAULT_PRODUCT_GROUP
 
 def dominant_group(series):
     counts = series.value_counts()
@@ -90,8 +87,6 @@ def run_intelligent_audit(file_path):
     desc_col = next(c for c in df.columns if 'desc' in c.lower())
     
     df['Standard_Desc'] = df[desc_col].apply(clean_description)
-    df['Prefix'] = df[id_col].astype(str).str.extract(r'^([A-Z]+)')
-    df['Business_Dept'] = df['Prefix'].map(DEPARTMENT_MAP).fillna('GENERAL STOCK')
     df['Part_Noun'] = df['Standard_Desc'].apply(intelligent_noun_extractor)
     df['Product_Group'] = df['Part_Noun'].apply(map_product_group)
 
@@ -126,10 +121,7 @@ else:
     st.stop()
 
 # Filter defaults
-dept_options = sorted(df_raw['Business_Dept'].unique())
 group_options = list(PRODUCT_GROUPS.keys())
-extra_groups = sorted(set(df_raw['Product_Group'].unique()) - set(group_options))
-group_options.extend(extra_groups)
 
 # --- HEADER & MODERN NAVIGATION ---
 st.title("🛡️ AI Inventory Auditor Pro")
@@ -149,15 +141,10 @@ with page[0]:
     # Filters at the top
     with st.container():
         st.markdown("##### 🔍 Filters")
-        fcol1, fcol2 = st.columns(2)
-        with fcol1:
-            selected_dept = st.multiselect("Department", options=dept_options, default=dept_options, key="dash_dept")
-        with fcol2:
-            selected_group = st.multiselect("Business Category", options=group_options, default=group_options, key="dash_group")
+        selected_group = st.multiselect("Product Category", options=group_options, default=group_options, key="dash_group")
     
     # Apply Filters
-    df = df_raw[df_raw['Business_Dept'].isin(selected_dept)]
-    df = df[df['Product_Group'].isin(selected_group)]
+    df = df_raw[df_raw['Product_Group'].isin(selected_group)]
     
     st.markdown("---")
     
@@ -172,7 +159,7 @@ with page[0]:
     
     col1, col2 = st.columns(2)
     with col1:
-        fig_pie = px.pie(df, names='Business_Dept', title="Inventory Distribution by Department", hole=0.4)
+        fig_pie = px.pie(df, names='Product_Group', title="Inventory Distribution by Product Category", hole=0.4)
         st.plotly_chart(fig_pie, use_container_width=True)
     with col2:
         top_nouns = df['Part_Noun'].value_counts().head(10).reset_index()
@@ -197,22 +184,17 @@ with page[1]:
     # Filters at the top of the table
     with st.container():
         st.markdown("##### 🔍 Filters")
-        fcol1, fcol2 = st.columns(2)
-        with fcol1:
-            selected_dept = st.multiselect("Department", options=dept_options, default=dept_options, key="cat_dept")
-        with fcol2:
-            selected_group = st.multiselect("Business Category", options=group_options, default=group_options, key="cat_group")
+        selected_group = st.multiselect("Product Category", options=group_options, default=group_options, key="cat_group")
     
     # Apply Filters
-    df = df_raw[df_raw['Business_Dept'].isin(selected_dept)]
-    df = df[df['Product_Group'].isin(selected_group)]
+    df = df_raw[df_raw['Product_Group'].isin(selected_group)]
     
     st.markdown("---")
     st.markdown(f"**Showing {len(df)} items**")
     
     # Data Table with sorting
     st.dataframe(
-        df[[id_col, 'Standard_Desc', 'Part_Noun', 'Product_Group', 'Business_Dept', 'Confidence']].sort_values('Confidence', ascending=False),
+        df[[id_col, 'Standard_Desc', 'Part_Noun', 'Product_Group', 'Confidence']].sort_values('Confidence', ascending=False),
         use_container_width=True,
         height=400
     )
@@ -240,15 +222,10 @@ with page[2]:
     # Filters at the top
     with st.container():
         st.markdown("##### 🔍 Filters")
-        fcol1, fcol2 = st.columns(2)
-        with fcol1:
-            selected_dept = st.multiselect("Department", options=dept_options, default=dept_options, key="qual_dept")
-        with fcol2:
-            selected_group = st.multiselect("Business Category", options=group_options, default=group_options, key="qual_group")
+        selected_group = st.multiselect("Product Category", options=group_options, default=group_options, key="qual_group")
     
     # Apply Filters
-    df = df_raw[df_raw['Business_Dept'].isin(selected_dept)]
-    df = df[df['Product_Group'].isin(selected_group)]
+    df = df_raw[df_raw['Product_Group'].isin(selected_group)]
     
     st.markdown("---")
     
