@@ -12,8 +12,6 @@ from sklearn.ensemble import IsolationForest
 from sklearn.cluster import KMeans
 import plotly.express as px
 import plotly.graph_objects as go
-from transformers import pipeline
-from sentence_transformers import SentenceTransformer
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="AI Inventory Auditor Pro", layout="wide", page_icon="🛡️")
@@ -25,6 +23,7 @@ COMPARISON_WINDOW_SIZE = 50  # Windowed comparisons keep duplicate checks lightw
 FUZZY_SIMILARITY_THRESHOLD = 0.85
 SEMANTIC_SIMILARITY_THRESHOLD = 0.9
 HF_BATCH_SIZE = 16
+ENABLE_HF_MODELS = os.getenv("ENABLE_HF_MODELS", "false").lower() == "true"
 
 PRODUCT_GROUPS = {
     "Piping & Fittings": ["FLANGE", "PIPE", "ELBOW", "TEE", "UNION", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
@@ -92,6 +91,7 @@ def apply_distance_floor(distances, min_threshold=MIN_DISTANCE_THRESHOLD):
 @st.cache_resource
 def get_zero_shot_classifier():
     try:
+        from transformers import pipeline
         return pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
     except (OSError, ImportError, ValueError):
         st.warning("Hugging Face classifier unavailable; using existing categories.")
@@ -100,6 +100,7 @@ def get_zero_shot_classifier():
 @st.cache_resource
 def get_sentence_model():
     try:
+        from sentence_transformers import SentenceTransformer
         return SentenceTransformer("all-MiniLM-L6-v2")
     except (OSError, ImportError, ValueError):
         st.warning("Sentence-transformer model unavailable; falling back to TF-IDF signals.")
@@ -139,7 +140,7 @@ def compute_embeddings(texts):
 
 # --- MAIN ENGINE ---
 @st.cache_data
-def run_intelligent_audit(file_path):
+def run_intelligent_audit(file_path, enable_hf=False):
     df = pd.read_csv(file_path, encoding='latin1')
     df.columns = [c.strip() for c in df.columns]
     id_col = next(c for c in df.columns if any(x in c.lower() for x in ['item', 'no']))
@@ -168,7 +169,7 @@ def run_intelligent_audit(file_path):
     df['Anomaly_Flag'] = iso.fit_predict(tfidf_matrix) # Using tfidf for complexity-based anomalies
 
     # Hugging Face Zero-Shot Classification
-    hf_results = run_hf_zero_shot(df['Standard_Desc'].tolist(), list(PRODUCT_GROUPS.keys()))
+    hf_results = run_hf_zero_shot(df['Standard_Desc'].tolist(), list(PRODUCT_GROUPS.keys())) if enable_hf else None
     if hf_results:
         df['HF_Product_Group'] = [res['labels'][0] for res in hf_results]
         df['HF_Product_Confidence'] = [round(res['scores'][0], 4) for res in hf_results]
@@ -177,7 +178,7 @@ def run_intelligent_audit(file_path):
         df['HF_Product_Confidence'] = df['Confidence']
 
     # Hugging Face Embeddings for Clustering/Anomaly
-    embeddings = compute_embeddings(df['Standard_Desc'].tolist())
+    embeddings = compute_embeddings(df['Standard_Desc'].tolist()) if enable_hf else None
     if embeddings is not None:
         kmeans_hf = KMeans(n_clusters=8, random_state=42, n_init=10)
         df['HF_Cluster_ID'] = kmeans_hf.fit_predict(embeddings)
@@ -201,7 +202,7 @@ def run_intelligent_audit(file_path):
 # --- DATA LOADING ---
 target_file = 'raw_data.csv'
 if os.path.exists(target_file):
-    df_raw, id_col, desc_col = run_intelligent_audit(target_file)
+    df_raw, id_col, desc_col = run_intelligent_audit(target_file, enable_hf=ENABLE_HF_MODELS)
 else:
     st.error("Data file missing from repository. Please ensure 'raw_data.csv' is present.")
     st.stop()
@@ -215,9 +216,6 @@ st.markdown("### Advanced Inventory Intelligence & Quality Management")
 
 # Modern horizontal tab navigation
 page = st.tabs(["📈 Executive Dashboard", "📍 Categorization Audit", "🚨 Quality Hub (Anomalies/Dups)", "🧠 Technical Methodology"])
-
-# Initialize filtered dataframe (will be filtered per page as needed)
-df = df_raw.copy()
 
 # --- PAGE: EXECUTIVE DASHBOARD ---
 with page[0]:
