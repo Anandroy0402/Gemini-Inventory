@@ -110,9 +110,6 @@ def get_hf_token():
     )
 
 def call_hf_inference(model, payload, token, warning_message):
-    if not token:
-        st.warning("Hugging Face token missing; skipping hosted inference.")
-        return None
     data = json.dumps(payload).encode("utf-8")
     req = request.Request(
         f"{HF_INFERENCE_API_URL}/{model}",
