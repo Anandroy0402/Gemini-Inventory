@@ -162,8 +162,7 @@ def run_intelligent_audit(file_path):
         kmeans_hf = KMeans(n_clusters=8, random_state=42, n_init=10)
         df['HF_Cluster_ID'] = kmeans_hf.fit_predict(embeddings)
         hf_dists = kmeans_hf.transform(embeddings)
-        max_dist = np.max(hf_dists, axis=1)
-        max_dist[max_dist == 0] = 1
+        max_dist = np.maximum(np.max(hf_dists, axis=1), 1e-8)
         df['HF_Cluster_Confidence'] = (1 - (np.min(hf_dists, axis=1) / max_dist)).round(4)
         iso_hf = IsolationForest(contamination=0.04, random_state=42)
         df['HF_Anomaly_Flag'] = iso_hf.fit_predict(embeddings)
@@ -379,8 +378,8 @@ with page[2]:
         else:
             sem_list = []
             recs = df.reset_index(drop=True).to_dict('records')
-            embeddings = [np.array(e) if e is not None else None for e in df['HF_Embedding'].tolist()]
-            window_size = 50
+            embeddings = df['HF_Embedding'].tolist()
+            window_size = 50  # Keep comparisons lightweight for UI responsiveness.
             for i in range(len(recs)):
                 for j in range(i + 1, min(i + window_size, len(recs))):
                     emb_i, emb_j = embeddings[i], embeddings[j]
