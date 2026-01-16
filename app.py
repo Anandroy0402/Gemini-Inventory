@@ -328,7 +328,7 @@ st.title("🛡️ AI Inventory Auditor Pro")
 st.markdown("### Advanced Inventory Intelligence & Quality Management")
 
 # Modern horizontal tab navigation
-page = st.tabs(["📈 Executive Dashboard", "📍 Categorization Audit", "🚨 Quality Hub (Anomalies/Dups)", "🧠 Technical Methodology"])
+page = st.tabs(["📈 Executive Dashboard", "📍 Categorization Audit", "🚨 Quality Hub (Anomalies/Dups)", "🧠 Technical Methodology", "🧭 My Approach"])
 
 # --- PAGE: EXECUTIVE DASHBOARD ---
 with page[0]:
@@ -540,3 +540,62 @@ with page[3]:
     ### 5. Fuzzy Match & Conflict Resolution
     We use the **Levenshtein Distance** algorithm. However, we've added a **Business Logic Layer**: if two items have similar text but conflicting 'Technical DNA' (e.g. one is Male, one is Female), the system overrides the AI and flags it as a **Variant**, not a duplicate. We also run a semantic duplicate check using cosine similarity on sentence-transformer embeddings within a small window.
     """)
+
+# --- PAGE: MY APPROACH ---
+with page[4]:
+    st.markdown("#### 🧭 My Approach")
+    st.markdown("A concise walkthrough of the full end-to-end workflow implemented across the app.")
+    st.markdown("""
+    <h2>🏛️ Architectural Philosophy: The Hybrid Intelligence Model</h2>
+    <p>The core strength of this application lies in its <b>Hybrid AI Approach</b>. Rather than relying on a single algorithm, it combines three distinct layers of logic to ensure accuracy:</p>
+    <ol>
+        <li><p><b>Heuristic Layer:</b> Uses a predefined Knowledge Base and Regular Expressions (RegEx) for absolute technical accuracy.</p></li>
+        <li><p><b>Statistical Layer (Classical ML):</b> Employs <b>TF-IDF</b>, <b>K-Means</b>, and <b>Isolation Forest</b> for pattern recognition and anomaly detection based on the specific dataset.</p></li>
+        <li><p><b>Neural Layer (Deep Learning):</b> Leverages <b>Hugging Face Inference APIs</b> (BART and Sentence-Transformers) for semantic understanding and zero-shot classification.</p></li>
+    </ol>
+    <hr>
+    <h2>🛠️ Phase 1: Data Standardization &amp; "Tech DNA" Extraction</h2>
+    <p>The system first cleanses the data to remove "noise" (special characters, case inconsistencies) that typically disrupts auditing.</p>
+    <ul>
+        <li><p><b>Standardization:</b> The <code>clean_description</code> function normalizes descriptions (e.g., converting "O-RING" to "O RING" and "MECH-SEAL" to "MECHANICAL SEAL").</p></li>
+        <li><p><b>Feature Engineering (Tech DNA):</b> The <code>get_tech_dna</code> function is a specialized parser. It extracts "Genetic Markers" of an inventory item—specifically <b>numeric values</b> and <b>technical attributes</b> (Gender, Connection type, Pressure rating). This allows the AI to distinguish between a "Male Valve" and a "Female Valve" even if the text descriptions are 99% similar.</p></li>
+    </ul>
+    <hr>
+    <h2>🏷️ Phase 2: Multi-Stage Categorization</h2>
+    <p>To ensure items are placed in the correct <code>Product_Group</code>, the app runs a parallel classification process:</p>
+    <h3>1. Rule-Based Noun Extraction</h3>
+    <p>The <code>intelligent_noun_extractor</code> uses a prioritized list of phrases (e.g., "BALL VALVE" takes precedence over "VALVE") to identify the "Part Noun."</p>
+    <h3>2. Zero-Shot Classification (Deep Learning)</h3>
+    <p>If enabled, the system calls the <code>facebook/bart-large-mnli</code> model. Unlike traditional models, this does not require training on your specific data; it uses its pre-trained "knowledge" of the English language to categorize items into labels like "Fasteners &amp; Seals" or "Piping &amp; Fittings."</p>
+    <h3>3. Cluster Validation</h3>
+    <p>The system uses <b>K-Means Clustering</b> to group items that are mathematically similar. It then checks if the "Human Logic" category matches the "Machine Logic" cluster. If they match, the <b>Confidence Score</b> increases.</p>
+    <hr>
+    <h2>🚨 Phase 3: The Quality &amp; Audit Hub</h2>
+    <p>This is the engine's "Defense Layer," designed to catch errors that a human auditor might miss.</p>
+    <h3>Anomaly Detection (Isolation Forest)</h3>
+    <p>The <code>IsolationForest</code> algorithm treats the inventory list as a multi-dimensional map. Items that exist in "lonely" areas of this map (mathematical outliers) are flagged as anomalies. This is excellent for catching typos or items that simply don't belong in the catalog.</p>
+    <h3>Fuzzy vs. Semantic Duplicates</h3>
+    <ul>
+        <li><p><b>Fuzzy Matching:</b> Uses Levenshtein distance to find text-based similarities.</p></li>
+        <li><p><b>Semantic Matching:</b> Uses <b>Cosine Similarity</b> on high-dimensional vectors (Embeddings).</p></li>
+        <li><p><b>The "Spec-Trap" Override:</b> Crucially, if two items have a high similarity score but different "Tech DNA" (e.g., one is 150# rating and the other is 300#), the system overrides the duplicate flag and labels it a <b>Variant</b>.</p></li>
+    </ul>
+    <hr>
+    <h2>📈 Phase 4: Executive Insights (Streamlit UI)</h2>
+    <p>The final layer translates complex data into actionable metrics using <b>Plotly</b>:</p>
+    <ul>
+        <li><p><b>Inventory Health Gauge:</b> A real-time calculation of data accuracy.</p></li>
+        <li><p><b>Confidence Distribution:</b> A histogram showing the reliability of the AI's categorization.</p></li>
+        <li><p><b>Duplicate Pairs:</b> A structured list of potential risks for procurement and warehouse teams.</p></li>
+    </ul>
+    <hr>
+    <h2>🧰 Technical Stack Summary</h2>
+
+    | Component | Technology |
+    | - | - |
+    | Frontend | Streamlit |
+    | Data Processing | Pandas, NumPy, RegEx |
+    | Machine Learning | Scikit-Learn (KMeans, Isolation Forest) |
+    | Deep Learning | Hugging Face Inference API (BART, MiniLM) |
+    | Visualizations | Plotly Express &amp; Graph Objects |
+    """, unsafe_allow_html=True)
