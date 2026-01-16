@@ -101,6 +101,8 @@ def apply_distance_floor(distances, min_threshold=MIN_DISTANCE_THRESHOLD):
 def normalize_confidence_scores(scores):
     if not isinstance(scores, pd.Series):
         scores = pd.Series(scores)
+    if scores.empty:
+        return scores
     max_score = scores.max()
     if max_score >= HF_CONFIDENCE_MIN_THRESHOLD:
         return scores
@@ -116,13 +118,16 @@ def build_fuzzy_duplicates(df, id_col):
     for i in range(len(recs)):
         for j in range(i + 1, min(i + COMPARISON_WINDOW_SIZE, len(recs))):
             r1, r2 = recs[i], recs[j]
-            sim = SequenceMatcher(None, r1['Standard_Desc'], r2['Standard_Desc']).ratio()
+            desc1 = r1.get('Standard_Desc') or ''
+            desc2 = r2.get('Standard_Desc') or ''
+            sim = SequenceMatcher(None, desc1, desc2).ratio()
             if sim > FUZZY_SIMILARITY_THRESHOLD:
-                dna1, dna2 = r1['Tech_DNA'], r2['Tech_DNA']
+                dna1 = r1.get('Tech_DNA') or {'numbers': set(), 'attributes': {}}
+                dna2 = r2.get('Tech_DNA') or {'numbers': set(), 'attributes': {}}
                 is_variant = (dna1['numbers'] != dna2['numbers']) or (dna1['attributes'] != dna2['attributes'])
                 fuzzy_list.append({
                     'ID A': r1[id_col], 'ID B': r2[id_col],
-                    'Desc A': r1['Standard_Desc'], 'Desc B': r2['Standard_Desc'],
+                    'Desc A': desc1, 'Desc B': desc2,
                     'Match %': f"{sim:.1%}", 'Verdict': "🛠️ Variant" if is_variant else "🚨 Duplicate"
                 })
     return fuzzy_list
