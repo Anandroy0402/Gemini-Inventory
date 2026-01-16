@@ -34,6 +34,8 @@ ENABLE_HF_MODELS = os.getenv("ENABLE_HF_MODELS", "false").lower() == "true"
 HF_CONFIDENCE_MIN_THRESHOLD = 0.8
 HF_CONFIDENCE_MIN_TARGET = 0.6
 HF_CONFIDENCE_MAX_TARGET = 0.98
+HF_CONNECTION_CACHE_TTL = 30
+HF_CONNECTION_TEST_TEXT = "Inventory audit connection check."
 
 PRODUCT_GROUPS = {
     "Piping & Fittings": ["FLANGE", "PIPE", "ELBOW", "TEE", "UNION", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
@@ -146,7 +148,7 @@ def get_hf_token():
         or get_hf_secret("HUGGINGFACEHUB_API_TOKEN")
     )
 
-def call_hf_inference(model, payload, token, warning_message, notify=True):
+def call_hf_inference(model, payload, token, warning_message, show_warnings=True):
     if not token:
         return None
     data = json.dumps(payload).encode("utf-8")
@@ -159,7 +161,7 @@ def call_hf_inference(model, payload, token, warning_message, notify=True):
         with request.urlopen(req, timeout=HF_INFERENCE_TIMEOUT) as response:
             result = json.loads(response.read().decode("utf-8"))
         if isinstance(result, dict) and result.get("error"):
-            if notify:
+            if show_warnings:
                 st.warning(f"{warning_message} ({result.get('error')})")
             return None
         return result
@@ -172,7 +174,7 @@ def call_hf_inference(model, payload, token, warning_message, notify=True):
             detail = "network error"
         else:
             detail = "invalid response"
-        if notify:
+        if show_warnings:
             st.warning(f"{warning_message} ({detail})")
         return None
 
@@ -216,57 +218,6 @@ def compute_embeddings(texts):
     if not token:
         st.warning("Hugging Face token missing; skipping hosted embeddings.")
         return None
-
-def is_valid_zero_shot_response(result):
-    if isinstance(result, list) and result:
-        result = result[0]
-    if not isinstance(result, dict):
-        return False
-    labels = result.get("labels")
-    scores = result.get("scores")
-    return isinstance(labels, list) and isinstance(scores, list) and bool(labels) and bool(scores)
-
-def is_valid_embedding_response(result):
-    if isinstance(result, list) and result:
-        if all(isinstance(x, (int, float)) for x in result):
-            return True
-        if isinstance(result[0], list) and result[0]:
-            return all(isinstance(x, (int, float)) for x in result[0])
-    return False
-
-@st.cache_data
-def test_hf_inference_connection(enable_hf_models):
-    if not enable_hf_models:
-        return {"enabled": False, "zero_shot": False, "embeddings": False, "reason": "disabled"}
-    token = get_hf_token()
-    if not token:
-        return {"enabled": False, "zero_shot": False, "embeddings": False, "reason": "missing_token"}
-    test_text = "Inventory audit connection check."
-    zero_shot_payload = {
-        "inputs": test_text,
-        "parameters": {"candidate_labels": list(PRODUCT_GROUPS.keys())[:2]},
-        "options": {"wait_for_model": True}
-    }
-    zero_shot_result = call_hf_inference(
-        HF_ZERO_SHOT_MODEL,
-        zero_shot_payload,
-        token,
-        "Hugging Face connection test failed",
-        notify=False
-    )
-    zero_shot_ok = is_valid_zero_shot_response(zero_shot_result)
-    embedding_payload = {"inputs": [test_text], "options": {"wait_for_model": True}}
-    embedding_result = call_hf_inference(
-        HF_EMBEDDING_MODEL,
-        embedding_payload,
-        token,
-        "Hugging Face embedding test failed",
-        notify=False
-    )
-    embedding_ok = is_valid_embedding_response(embedding_result)
-    enabled = zero_shot_ok or embedding_ok
-    reason = None if enabled else "inference_test_failed"
-    return {"enabled": enabled, "zero_shot": zero_shot_ok, "embeddings": embedding_ok, "reason": reason}
     try:
         embeddings = []
         for start in range(0, len(texts), HF_BATCH_SIZE):
@@ -292,9 +243,81 @@ def test_hf_inference_connection(enable_hf_models):
         st.warning("Embedding generation failed; falling back to TF-IDF signals.")
         return None
 
+def is_valid_zero_shot_item(item):
+    if not isinstance(item, dict):
+        return False
+    labels = item.get("labels")
+    scores = item.get("scores")
+    return isinstance(labels, list) and isinstance(scores, list) and bool(labels) and bool(scores)
+
+def is_valid_zero_shot_response(result):
+    if isinstance(result, dict):
+        return is_valid_zero_shot_item(result)
+    if isinstance(result, list) and result:
+        return all(is_valid_zero_shot_item(item) for item in result)
+    return False
+
+def is_valid_embedding_response(result):
+    if not isinstance(result, list) or not result:
+        return False
+    if all(isinstance(x, (int, float)) for x in result):
+        return True
+    if isinstance(result[0], list) and result[0]:
+        return all(isinstance(x, (int, float)) for x in result[0])
+    return False
+
+@st.cache_data(ttl=HF_CONNECTION_CACHE_TTL)
+def test_hf_inference_connection(enable_hf_models):
+    if not enable_hf_models:
+        return {"enabled": False, "zero_shot": False, "embeddings": False, "reason": "disabled"}
+    token = get_hf_token()
+    if not token:
+        return {"enabled": False, "zero_shot": False, "embeddings": False, "reason": "missing_token"}
+    test_text = HF_CONNECTION_TEST_TEXT
+    zero_shot_payload = {
+        "inputs": [test_text],
+        "parameters": {
+            "candidate_labels": list(PRODUCT_GROUPS.keys()),
+            "hypothesis_template": "This industrial inventory item is {}"
+        },
+        "options": {"wait_for_model": True}
+    }
+    zero_shot_result = call_hf_inference(
+        HF_ZERO_SHOT_MODEL,
+        zero_shot_payload,
+        token,
+        "Hugging Face connection test failed",
+        show_warnings=False
+    )
+    zero_shot_ok = is_valid_zero_shot_response(zero_shot_result)
+    embedding_payload = {"inputs": [test_text], "options": {"wait_for_model": True}}
+    embedding_result = call_hf_inference(
+        HF_EMBEDDING_MODEL,
+        embedding_payload,
+        token,
+        "Hugging Face embedding test failed",
+        show_warnings=False
+    )
+    embedding_ok = is_valid_embedding_response(embedding_result)
+    if zero_shot_ok and embedding_ok:
+        status = "full"
+    elif zero_shot_ok or embedding_ok:
+        status = "partial"
+    else:
+        status = "unavailable"
+    enabled = status in {"full", "partial"}
+    reason = None if enabled else "inference_test_failed"
+    return {
+        "enabled": enabled,
+        "zero_shot": zero_shot_ok,
+        "embeddings": embedding_ok,
+        "reason": reason,
+        "status": status
+    }
+
 # --- MAIN ENGINE ---
 @st.cache_data
-def run_intelligent_audit(file_path, enable_hf_models=False, enable_hf_zero_shot=False, enable_hf_embeddings=False):
+def run_intelligent_audit(file_path, enable_hf_zero_shot=False, enable_hf_embeddings=False):
     df = pd.read_csv(file_path, encoding='latin1')
     df.columns = [c.strip() for c in df.columns]
     id_col = next(c for c in df.columns if any(x in c.lower() for x in ['item', 'no']))
@@ -322,9 +345,7 @@ def run_intelligent_audit(file_path, enable_hf_models=False, enable_hf_zero_shot
     iso = IsolationForest(contamination=0.04, random_state=42)
     df['Anomaly_Flag'] = iso.fit_predict(tfidf_matrix) # Using tfidf for complexity-based anomalies
 
-    hf_zero_shot_enabled = enable_hf_models and enable_hf_zero_shot
-    hf_embedding_enabled = enable_hf_models and enable_hf_embeddings
-    standard_desc = df['Standard_Desc'].tolist() if hf_embedding_enabled else None
+    standard_desc = df['Standard_Desc'].tolist() if enable_hf_embeddings else None
     hf_inputs = (
         df['Part_Noun']
         .fillna('')
@@ -332,11 +353,11 @@ def run_intelligent_audit(file_path, enable_hf_models=False, enable_hf_zero_shot
         .str.replace(r'\s+', ' ', regex=True)
         .str.strip()
         .tolist()
-        if hf_zero_shot_enabled else None
+        if enable_hf_zero_shot else None
     )
 
     # Hugging Face Zero-Shot Classification
-    hf_results = run_hf_zero_shot(hf_inputs, list(PRODUCT_GROUPS.keys())) if hf_zero_shot_enabled else None
+    hf_results = run_hf_zero_shot(hf_inputs, list(PRODUCT_GROUPS.keys())) if enable_hf_zero_shot else None
     if hf_results:
         df['HF_Product_Group'] = [res['labels'][0] for res in hf_results]
         df['HF_Product_Confidence'] = [round(res['scores'][0], 4) for res in hf_results]
@@ -346,7 +367,7 @@ def run_intelligent_audit(file_path, enable_hf_models=False, enable_hf_zero_shot
     df['HF_Product_Confidence'] = normalize_confidence_scores(df['HF_Product_Confidence'])
 
     # Hugging Face Embeddings for Clustering/Anomaly
-    embeddings = compute_embeddings(standard_desc) if hf_embedding_enabled else None
+    embeddings = compute_embeddings(standard_desc) if enable_hf_embeddings else None
     if embeddings is not None:
         kmeans_hf = KMeans(n_clusters=8, random_state=42, n_init=10)
         df['HF_Cluster_ID'] = kmeans_hf.fit_predict(embeddings)
@@ -373,7 +394,6 @@ target_file = 'raw_data.csv'
 if os.path.exists(target_file):
     df_raw, id_col, desc_col = run_intelligent_audit(
         target_file,
-        enable_hf_models=hf_status["enabled"],
         enable_hf_zero_shot=hf_status["zero_shot"],
         enable_hf_embeddings=hf_status["embeddings"]
     )
@@ -393,8 +413,11 @@ if hf_status["enabled"]:
         enabled_features.append("zero-shot classification")
     if hf_status["embeddings"]:
         enabled_features.append("embeddings")
-    feature_label = ", ".join(enabled_features) if enabled_features else "inference"
-    st.success(f"Hugging Face Inference API connected ({feature_label}).")
+    feature_label = ", ".join(enabled_features)
+    status_label = hf_status.get("status", "partial")
+    if status_label not in {"full", "partial"}:
+        status_label = "partial"
+    st.success(f"Hugging Face Inference API connected ({status_label}: {feature_label}).")
 elif hf_status["reason"] == "disabled":
     st.info("Hugging Face models disabled. Set ENABLE_HF_MODELS=true to enable hosted inference.")
 elif hf_status["reason"] == "missing_token":
