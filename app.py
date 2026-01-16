@@ -328,7 +328,7 @@ st.title("🛡️ AI Inventory Auditor Pro")
 st.markdown("### Advanced Inventory Intelligence & Quality Management")
 
 # Modern horizontal tab navigation
-page = st.tabs(["📈 Executive Dashboard", "📍 Categorization Audit", "🚨 Quality Hub (Anomalies/Dups)", "🧠 Technical Methodology"])
+page = st.tabs(["📈 Executive Dashboard", "📍 Categorization Audit", "🚨 Quality Hub (Anomalies/Dups)", "🧠 Technical Methodology", "🧭 My Approach"])
 
 # --- PAGE: EXECUTIVE DASHBOARD ---
 with page[0]:
@@ -539,4 +539,37 @@ with page[3]:
     
     ### 5. Fuzzy Match & Conflict Resolution
     We use the **Levenshtein Distance** algorithm. However, we've added a **Business Logic Layer**: if two items have similar text but conflicting 'Technical DNA' (e.g. one is Male, one is Female), the system overrides the AI and flags it as a **Variant**, not a duplicate. We also run a semantic duplicate check using cosine similarity on sentence-transformer embeddings within a small window.
+    """)
+
+# --- PAGE: MY APPROACH ---
+with page[4]:
+    st.markdown("#### 🧭 My Approach")
+    st.markdown("A concise walkthrough of the full end-to-end workflow implemented across the app.")
+    st.markdown("""
+    ### 1. Load & Normalize Inventory Data
+    - Read `raw_data.csv`, standardize column headers, and detect ID/description fields.
+    - Clean descriptions by uppercasing, removing noise, and normalizing key phrases.
+    - Build a "Technical DNA" profile (numbers/specs/attributes) for spec-aware comparisons.
+
+    ### 2. Domain-Guided Categorization
+    - Extract the most meaningful part noun from each description.
+    - Map nouns to knowledge-base product groups to anchor classification.
+
+    ### 3. ML Baseline Signals
+    - Generate TF-IDF vectors and cluster with K-Means to validate grouping.
+    - Compute confidence scores from cluster distances.
+    - Detect anomalies with Isolation Forest over TF-IDF features.
+
+    ### 4. Optional Hugging Face Enrichment
+    - Zero-shot classification refines product groups and confidence scores.
+    - Sentence-transformer embeddings support semantic clustering and anomaly flags.
+
+    ### 5. Quality Checks & Deduplication
+    - Fuzzy matching surfaces near-duplicates while respecting spec conflicts.
+    - Semantic duplicate detection uses cosine similarity on embeddings.
+
+    ### 6. Insight-Driven UI Flow
+    - **Executive Dashboard** summarizes KPIs, distribution, and confidence insights.
+    - **Categorization Audit** offers filtered tables and confidence distributions.
+    - **Quality Hub** highlights anomalies and duplicate candidates for review.
     """)
