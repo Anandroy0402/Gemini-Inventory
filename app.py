@@ -23,12 +23,13 @@ DEPARTMENT_MAP = {
 }
 
 PRODUCT_GROUPS = {
-    "HAND TOOLS": ["PLIER", "CUTTING PLIER", "STRIPPER", "WIRE STRIPPER", "WRENCH", "SPANNER", "HAMMER", "FILE", "SAW", "TOOL", "CHISEL", "CUTTER", "TAPE MEASURE", "MEASURING TAPE"],
-    "PIPING COMPONENTS": ["PIPE", "FLANGE", "ELBOW", "TEE", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
-    "VALVE ASSEMBLIES": ["VALVE", "ACTUATOR", "BALL VALVE", "GATE VALVE", "CHECK VALVE", "GLOBE VALVE", "PLUG VALVE", "COCK"],
-    "FASTENERS & HARDWARE": ["STUD", "BOLT", "NUT", "WASHER", "GASKET", "O-RING", "SEAL", "MECH SEAL", "GLOW", "JOINT"],
-    "INSTRUMENTATION": ["TRANSMITTER", "GAUGE", "CABLE", "WIRE", "CONNECTOR", "PLUG", "SWITCH", "HUB", "SENSOR"],
-    "CONSUMABLES": ["BRUSH", "PAINT BRUSH", "TAPE", "STICKER", "CHALK", "GLOVE", "CLEANER", "PAINT", "CEMENT", "HOSE", "ADHESIVE"]
+    "PIPING & FITTINGS": ["FLANGE", "PIPE", "ELBOW", "TEE", "UNION", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
+    "VALVES & ACTUATORS": ["BALL VALVE", "GATE VALVE", "PLUG VALVE", "CHECK VALVE", "GLOBE VALVE", "CONTROL VALVE", "VALVE", "ACTUATOR", "COCK"],
+    "FASTENERS & SEALS": ["STUD", "BOLT", "NUT", "WASHER", "GASKET", "O RING", "MECHANICAL SEAL", "SEAL", "JOINT"],
+    "ELECTRICAL & INSTR.": ["TRANSMITTER", "CABLE", "WIRE", "GAUGE", "SENSOR", "CONNECTOR", "SWITCH", "TERMINAL", "INSTRUMENT"],
+    "TOOLS & HARDWARE": ["PLIER", "CUTTING PLIER", "STRIPPER", "WIRE STRIPPER", "WRENCH", "SPANNER", "HAMMER", "FILE", "SAW", "TOOL", "CHISEL", "CUTTER", "TAPE MEASURE", "MEASURING TAPE", "BIT", "DRILL BIT"],
+    "CONSUMABLES & GENERAL": ["BRUSH", "PAINT BRUSH", "TAPE", "ADHESIVE", "HOSE", "SAFETY GLOVE", "GLOVE", "CLEANER", "PAINT", "CEMENT", "STICKER", "CHALK"],
+    "SPECIALIZED SPARES": ["FILTER", "BEARING", "PUMP", "MOTOR", "CARTRIDGE", "IMPELLER", "SPARE"]
 }
 
 SPEC_TRAPS = {
@@ -40,6 +41,8 @@ SPEC_TRAPS = {
 # --- AI UTILITIES ---
 def clean_description(text):
     text = str(text).upper().replace('"', ' ')
+    text = text.replace("O-RING", "O RING")
+    text = text.replace("MECH-SEAL", "MECHANICAL SEAL").replace("MECH SEAL", "MECHANICAL SEAL")
     text = re.sub(r'[^A-Z0-9\s./-]', ' ', text)
     return re.sub(r'\s+', ' ', text).strip()
 
@@ -56,7 +59,7 @@ def get_tech_dna(text):
 
 def intelligent_noun_extractor(text):
     text = clean_description(text)
-    phrases = ["MEASURING TAPE", "BALL VALVE", "GATE VALVE", "CHECK VALVE", "PAINT BRUSH", "WIRE STRIPPER", "CUTTING PLIER"]
+    phrases = ["MEASURING TAPE", "BALL VALVE", "GATE VALVE", "PLUG VALVE", "CHECK VALVE", "MECHANICAL SEAL", "PAINT BRUSH", "WIRE STRIPPER", "CUTTING PLIER", "DRILL BIT"]
     for p in phrases:
         if re.search(token_pattern(p), text): return p
     all_nouns = [item for sublist in PRODUCT_GROUPS.values() for item in sublist]
@@ -122,6 +125,12 @@ else:
     st.error("Data file missing from repository. Please ensure 'raw_data.csv' is present.")
     st.stop()
 
+# Filter defaults
+dept_options = sorted(df_raw['Business_Dept'].unique())
+group_options = list(PRODUCT_GROUPS.keys())
+extra_groups = sorted(set(df_raw['Product_Group'].unique()) - set(group_options))
+group_options.extend(extra_groups)
+
 # --- HEADER & MODERN NAVIGATION ---
 st.title("🛡️ AI Inventory Auditor Pro")
 st.markdown("### Advanced Inventory Intelligence & Quality Management")
@@ -138,17 +147,17 @@ with page[0]:
     st.markdown("Get a bird's eye view of your inventory data quality and distribution.")
     
     # Filters at the top
-    with st.expander("🔍 Filter Data", expanded=False):
+    with st.container():
+        st.markdown("##### 🔍 Filters")
         fcol1, fcol2 = st.columns(2)
         with fcol1:
-            selected_dept = st.multiselect("Department", options=df_raw['Business_Dept'].unique(), default=df_raw['Business_Dept'].unique(), key="dash_dept")
+            selected_dept = st.multiselect("Department", options=dept_options, default=dept_options, key="dash_dept")
         with fcol2:
-            selected_noun = st.multiselect("Product Noun", options=sorted(df_raw['Part_Noun'].unique()), default=[], key="dash_noun")
+            selected_group = st.multiselect("Business Category", options=group_options, default=group_options, key="dash_group")
     
     # Apply Filters
     df = df_raw[df_raw['Business_Dept'].isin(selected_dept)]
-    if selected_noun:
-        df = df[df['Part_Noun'].isin(selected_noun)]
+    df = df[df['Product_Group'].isin(selected_group)]
     
     st.markdown("---")
     
@@ -186,17 +195,17 @@ with page[1]:
     st.markdown("Drill down into specific product categories with intelligent filtering.")
     
     # Filters at the top of the table
-    with st.expander("🔍 Filter Data", expanded=True):
+    with st.container():
+        st.markdown("##### 🔍 Filters")
         fcol1, fcol2 = st.columns(2)
         with fcol1:
-            selected_dept = st.multiselect("Department", options=df_raw['Business_Dept'].unique(), default=df_raw['Business_Dept'].unique(), key="cat_dept")
+            selected_dept = st.multiselect("Department", options=dept_options, default=dept_options, key="cat_dept")
         with fcol2:
-            selected_noun = st.multiselect("Product Noun", options=sorted(df_raw['Part_Noun'].unique()), default=[], key="cat_noun")
+            selected_group = st.multiselect("Business Category", options=group_options, default=group_options, key="cat_group")
     
     # Apply Filters
     df = df_raw[df_raw['Business_Dept'].isin(selected_dept)]
-    if selected_noun:
-        df = df[df['Part_Noun'].isin(selected_noun)]
+    df = df[df['Product_Group'].isin(selected_group)]
     
     st.markdown("---")
     st.markdown(f"**Showing {len(df)} items**")
@@ -229,17 +238,17 @@ with page[2]:
     st.markdown("Identify quality issues and potential duplicates in your inventory data.")
     
     # Filters at the top
-    with st.expander("🔍 Filter Data", expanded=False):
+    with st.container():
+        st.markdown("##### 🔍 Filters")
         fcol1, fcol2 = st.columns(2)
         with fcol1:
-            selected_dept = st.multiselect("Department", options=df_raw['Business_Dept'].unique(), default=df_raw['Business_Dept'].unique(), key="qual_dept")
+            selected_dept = st.multiselect("Department", options=dept_options, default=dept_options, key="qual_dept")
         with fcol2:
-            selected_noun = st.multiselect("Product Noun", options=sorted(df_raw['Part_Noun'].unique()), default=[], key="qual_noun")
+            selected_group = st.multiselect("Business Category", options=group_options, default=group_options, key="qual_group")
     
     # Apply Filters
     df = df_raw[df_raw['Business_Dept'].isin(selected_dept)]
-    if selected_noun:
-        df = df[df['Part_Noun'].isin(selected_noun)]
+    df = df[df['Product_Group'].isin(selected_group)]
     
     st.markdown("---")
     
