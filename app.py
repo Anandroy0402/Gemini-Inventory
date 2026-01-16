@@ -592,7 +592,7 @@ with page[4]:
     <h2>🧰 Technical Stack Summary</h2>
 
     | Component | Technology |
-    | --- | --- |
+    | - | - |
     | Frontend | Streamlit |
     | Data Processing | Pandas, NumPy, RegEx |
     | Machine Learning | Scikit-Learn (KMeans, Isolation Forest) |
