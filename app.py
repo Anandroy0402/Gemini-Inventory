@@ -99,6 +99,8 @@ def apply_distance_floor(distances, min_threshold=MIN_DISTANCE_THRESHOLD):
     return np.where(max_dist == 0, min_threshold, max_dist)
 
 def normalize_confidence_scores(scores):
+    if not isinstance(scores, pd.Series):
+        scores = pd.Series(scores)
     max_score = scores.max()
     if max_score >= HF_CONFIDENCE_MIN_THRESHOLD:
         return scores
@@ -263,7 +265,10 @@ def run_intelligent_audit(file_path, enable_hf_models=False):
     df['Anomaly_Flag'] = iso.fit_predict(tfidf_matrix) # Using tfidf for complexity-based anomalies
 
     standard_desc = df['Standard_Desc'].tolist() if enable_hf_models else None
-    hf_inputs = (df['Part_Noun'] + " " + df['Standard_Desc']).tolist() if enable_hf_models else None
+    hf_inputs = (
+        (df['Part_Noun'].fillna('') + " " + df['Standard_Desc'].fillna('')).str.strip().tolist()
+        if enable_hf_models else None
+    )
 
     # Hugging Face Zero-Shot Classification
     hf_results = run_hf_zero_shot(hf_inputs, list(PRODUCT_GROUPS.keys())) if enable_hf_models else None
