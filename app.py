@@ -122,6 +122,8 @@ else:
 
 # Filter defaults
 group_options = list(PRODUCT_GROUPS.keys())
+if DEFAULT_PRODUCT_GROUP not in group_options:
+    group_options.append(DEFAULT_PRODUCT_GROUP)
 
 # --- HEADER & MODERN NAVIGATION ---
 st.title("🛡️ AI Inventory Auditor Pro")
