@@ -10,7 +10,8 @@ export ENABLE_HF_MODELS=true
 export HF_TOKEN="your_hf_token"
 ```
 
-Or add the token to `.streamlit/secrets.toml`:
+Or add the settings to `.streamlit/secrets.toml`:
 ```toml
+ENABLE_HF_MODELS = true
 HF_TOKEN = "your_hf_token"
 ```

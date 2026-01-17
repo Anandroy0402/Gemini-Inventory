@@ -21,6 +21,19 @@ import plotly.graph_objects as go
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="AI Inventory Auditor Pro", layout="wide", page_icon="🛡️")
 
+def resolve_bool_setting(key, default=False):
+    value = os.getenv(key)
+    if value is None:
+        try:
+            value = st.secrets.get(key)
+        except (AttributeError, KeyError):
+            value = None
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() == "true"
+
 # --- KNOWLEDGE BASE: DOMAIN LOGIC ---
 DEFAULT_PRODUCT_GROUP = "Consumables & General"
 MIN_DISTANCE_THRESHOLD = 1e-8  # Replace zero distances to avoid divide-by-zero in confidence calculations.
@@ -32,7 +45,7 @@ HF_ZERO_SHOT_MODEL = "facebook/bart-large-mnli"
 HF_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 HF_INFERENCE_API_URL = "https://api-inference.huggingface.co/models"
 HF_INFERENCE_TIMEOUT = 30
-ENABLE_HF_MODELS = os.getenv("ENABLE_HF_MODELS", "false").lower() == "true"
+ENABLE_HF_MODELS = resolve_bool_setting("ENABLE_HF_MODELS", default=False)
 HF_CONFIDENCE_MIN_THRESHOLD = 0.8
 HF_CONFIDENCE_MIN_TARGET = 0.6
 HF_CONFIDENCE_MAX_TARGET = 0.98
