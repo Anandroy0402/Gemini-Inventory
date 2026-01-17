@@ -5,6 +5,8 @@ import re
 import os
 import json
 import socket
+import tomllib
+from pathlib import Path
 from difflib import SequenceMatcher
 from urllib import request, error
 
@@ -134,7 +136,20 @@ def build_fuzzy_duplicates(df, id_col):
                 })
     return fuzzy_list
 
+def get_streamlit_secrets():
+    secrets_path = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
+    if not secrets_path.exists():
+        return {}
+    try:
+        with secrets_path.open("rb") as handle:
+            return tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
 def get_hf_secret(key):
+    secrets = get_streamlit_secrets()
+    if key in secrets:
+        return secrets[key]
     try:
         return st.secrets[key]
     except (AttributeError, KeyError):
