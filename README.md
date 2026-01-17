@@ -53,7 +53,7 @@ ENABLE_GEMINI_MODELS = true
 GEMINI_API_KEY = "your_actual_key_here"
 ```
 
-**⚠️ Security Note**: Never commit `.streamlit/secrets.toml` to version control! This file is already in `.gitignore`.
+**⚠️ Security Note**: Never commit `.streamlit/secrets.toml` to version control! This file is already in `.gitignore`. Avoid sharing API keys in PRs or issues; rotate keys immediately if exposed.
 
 ### Fallback Behavior
 
