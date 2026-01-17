@@ -5,6 +5,7 @@ import re
 import os
 import json
 import socket
+from concurrent.futures import ThreadPoolExecutor
 try:
     import tomllib
 except ImportError:
@@ -292,9 +293,9 @@ def call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings=T
     
     data = json.dumps(payload).encode("utf-8")
     req = request.Request(
-        f"{GEMINI_API_BASE_URL}/{endpoint}?key={api_key}",
+        f"{GEMINI_API_BASE_URL}/{endpoint}",
         data=data,
-        headers={"Content-Type": "application/json"}
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key}
     )
     
     try:
@@ -315,7 +316,7 @@ def call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings=T
     except error.HTTPError as exc:
         # HTTP errors (4xx, 5xx)
         detail = f"HTTP {exc.code}"
-        is_retryable = exc.code in {429, 500, 503}
+        is_retryable = exc.code in {429, 500, 502, 503}
         
         if exc.code == 401:
             detail += " - Invalid or expired API key"
@@ -381,7 +382,7 @@ def extract_json_from_text(text):
     if not text:
         return None
     cleaned = text.strip()
-    cleaned = re.sub(r"^```(?:json)?|```$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
     try:
         start = cleaned.index("{")
     except ValueError:
@@ -404,9 +405,9 @@ def normalize_gemini_label(label, labels):
     if not label:
         return None
     label_text = str(label).strip().lower()
+    lowered_labels = [(candidate, candidate.lower()) for candidate in labels]
     partial_match = None
-    for candidate in labels:
-        candidate_text = candidate.lower()
+    for candidate, candidate_text in lowered_labels:
         if label_text == candidate_text:
             return candidate
         if partial_match is None and (label_text in candidate_text or candidate_text in label_text):
@@ -491,19 +492,24 @@ def run_gemini_classification(texts, labels):
         return None
     if isinstance(texts, str):
         texts = [texts]
+    if not texts:
+        return None
+    max_workers = min(4, GEMINI_BATCH_SIZE, len(texts))
+    def classify_text(text):
+        prompt = build_gemini_prompt(text, labels)
+        response_text = call_gemini_generate(
+            prompt,
+            api_key,
+            "Gemini classification failed; using existing categories.",
+            show_warnings=False
+        )
+        return parse_gemini_classification_response(response_text, labels)
     try:
-        results = []
-        for text in texts:
-            prompt = build_gemini_prompt(text, labels)
-            response_text = call_gemini_generate(
-                prompt,
-                api_key,
-                "Gemini classification failed; using existing categories."
-            )
-            parsed = parse_gemini_classification_response(response_text, labels)
-            if not parsed:
-                return None
-            results.append(parsed)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(executor.map(classify_text, texts))
+        if any(result is None for result in results):
+            st.warning("Gemini classification failed; using existing categories.")
+            return None
         return results
     except (RuntimeError, ValueError):
         st.warning("Gemini classification failed; using existing categories.")
@@ -514,17 +520,22 @@ def compute_embeddings(texts):
     if not api_key:
         st.warning("Gemini API key missing; skipping hosted embeddings.")
         return None
+    if not texts:
+        return None
+    max_workers = min(4, GEMINI_BATCH_SIZE, len(texts))
+    def embed_text(text):
+        return call_gemini_embedding(
+            text,
+            api_key,
+            "Embedding generation failed; falling back to TF-IDF signals.",
+            show_warnings=False
+        )
     try:
-        embeddings = []
-        for text in texts:
-            embedding = call_gemini_embedding(
-                text,
-                api_key,
-                "Embedding generation failed; falling back to TF-IDF signals."
-            )
-            if not embedding:
-                return None
-            embeddings.append(embedding)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            embeddings = list(executor.map(embed_text, texts))
+        if any(embedding is None for embedding in embeddings):
+            st.warning("Embedding generation failed; falling back to TF-IDF signals.")
+            return None
         embeddings = np.array(embeddings, dtype=float)
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms[norms == 0] = 1
