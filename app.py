@@ -38,6 +38,12 @@ HF_CONFIDENCE_MIN_TARGET = 0.6
 HF_CONFIDENCE_MAX_TARGET = 0.98
 HF_CONNECTION_CACHE_TTL = 30
 HF_CONNECTION_TEST_TEXT = "Inventory audit connection check."
+HF_TOKEN_KEYS = (
+    "HF_TOKEN",
+    "HUGGINGFACEHUB_API_TOKEN",
+    "HUGGINGFACE_API_TOKEN",
+    "HUGGINGFACE_TOKEN"
+)
 
 PRODUCT_GROUPS = {
     "Piping & Fittings": ["FLANGE", "PIPE", "ELBOW", "TEE", "UNION", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
@@ -156,12 +162,13 @@ def get_hf_secret(key):
         return None
 
 def get_hf_token():
-    return (
-        os.getenv("HF_TOKEN")
-        or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-        or get_hf_secret("HF_TOKEN")
-        or get_hf_secret("HUGGINGFACEHUB_API_TOKEN")
-    )
+    for key in HF_TOKEN_KEYS:
+        token = os.getenv(key) or get_hf_secret(key)
+        if token:
+            token = str(token).strip()
+            if token:
+                return token
+    return None
 
 def call_hf_inference(model, payload, token, warning_message, show_warnings=True):
     if not token:
