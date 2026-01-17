@@ -382,26 +382,36 @@ def extract_json_from_text(text):
         return None
     cleaned = text.strip()
     cleaned = re.sub(r"^```(?:json)?|```$", "", cleaned, flags=re.IGNORECASE).strip()
-    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-    if not match:
-        return None
     try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
+        start = cleaned.index("{")
+    except ValueError:
         return None
+    depth = 0
+    for idx in range(start, len(cleaned)):
+        if cleaned[idx] == "{":
+            depth += 1
+        elif cleaned[idx] == "}":
+            depth -= 1
+            if depth == 0:
+                snippet = cleaned[start:idx + 1]
+                try:
+                    return json.loads(snippet)
+                except json.JSONDecodeError:
+                    return None
+    return None
 
 def normalize_gemini_label(label, labels):
     if not label:
         return None
     label_text = str(label).strip().lower()
-    for candidate in labels:
-        if label_text == candidate.lower():
-            return candidate
+    partial_match = None
     for candidate in labels:
         candidate_text = candidate.lower()
-        if label_text in candidate_text or candidate_text in label_text:
+        if label_text == candidate_text:
             return candidate
-    return None
+        if partial_match is None and (label_text in candidate_text or candidate_text in label_text):
+            partial_match = candidate
+    return partial_match
 
 def parse_gemini_classification_response(response_text, labels):
     payload = extract_json_from_text(response_text)

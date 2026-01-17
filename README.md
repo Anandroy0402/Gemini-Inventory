@@ -10,7 +10,7 @@ Set `ENABLE_GEMINI_MODELS=true` in the environment to enable the Gemini hosted m
 
 The app includes comprehensive connection diagnostics:
 - **Pre-flight checks**: DNS resolution and TCP connectivity tests before attempting API calls
-- **Token validation**: Verifies token format (should start with 'hf_' and be at least 20 characters)
+- **API key validation**: Verifies key format (at least 20 characters)
 - **Detailed error messages**: Specific error messages for different failure types (DNS, HTTP errors, timeouts, etc.)
 - **Automatic retries**: Transient failures (503, 429, model loading) are automatically retried with exponential backoff
 - **Diagnostic panel**: View real-time connection status in the Technical Methodology tab
@@ -44,7 +44,7 @@ export GEMINI_API_KEY="your_gemini_api_key"
 Copy the example secrets file and fill in your values:
 ```bash
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-# Edit .streamlit/secrets.toml with your actual token
+# Edit .streamlit/secrets.toml with your actual key
 ```
 
 Example `.streamlit/secrets.toml`:
