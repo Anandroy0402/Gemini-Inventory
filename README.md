@@ -1,10 +1,10 @@
 # inventory-ai-demo
 
-This Streamlit app audits inventory data with classical ML and optional Hugging Face models (zero-shot classification and sentence-transformer embeddings) to surface confidence, anomalies, and semantic duplicates.
+This Streamlit app audits inventory data with classical ML and optional Gemini models (classification and embeddings) to surface confidence, anomalies, and semantic duplicates.
 
-## Hugging Face Integration
+## Gemini Integration
 
-Set `ENABLE_HF_MODELS=true` in the environment to enable the Hugging Face hosted models. Provide a token via `HF_TOKEN`, `HUGGINGFACEHUB_API_TOKEN`, `HUGGINGFACE_API_TOKEN`, or `HUGGINGFACE_TOKEN` (environment variable or Streamlit secrets) for the Inference API.
+Set `ENABLE_GEMINI_MODELS=true` in the environment to enable the Gemini hosted models. Provide a key via `GEMINI_API_KEY` (environment variable or Streamlit secrets) for the Gemini API.
 
 ### Connection Diagnostics
 
@@ -18,13 +18,13 @@ The app includes comprehensive connection diagnostics:
 ### Common Issues and Solutions
 
 **DNS Resolution Failed / Network Unreachable:**
-- The Hugging Face API may be blocked by a corporate firewall or network policy
-- Contact your network administrator to whitelist `api-inference.huggingface.co`
+- The Gemini API may be blocked by a corporate firewall or network policy
+- Contact your network administrator to whitelist `generativelanguage.googleapis.com`
 - The app will automatically fall back to local ML models
 
-**Invalid Token:**
-- Ensure your token starts with `hf_` and is at least 20 characters long
-- Obtain a valid token from https://huggingface.co/settings/tokens
+**Invalid API Key:**
+- Ensure your API key is at least 20 characters long
+- Obtain a valid key from https://aistudio.google.com/app/apikey
 
 **Connection Timeout:**
 - Network may be slow or API temporarily unreachable
@@ -35,8 +35,8 @@ The app includes comprehensive connection diagnostics:
 
 **Option 1: Environment Variables**
 ```bash
-export ENABLE_HF_MODELS=true
-export HF_TOKEN="your_hf_token"
+export ENABLE_GEMINI_MODELS=true
+export GEMINI_API_KEY="your_gemini_api_key"
 ```
 
 **Option 2: Streamlit Secrets File**
@@ -49,16 +49,16 @@ cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 
 Example `.streamlit/secrets.toml`:
 ```toml
-ENABLE_HF_MODELS = true
-HF_TOKEN = "hf_your_actual_token_here"
+ENABLE_GEMINI_MODELS = true
+GEMINI_API_KEY = "your_actual_key_here"
 ```
 
 **⚠️ Security Note**: Never commit `.streamlit/secrets.toml` to version control! This file is already in `.gitignore`.
 
 ### Fallback Behavior
 
-If the Hugging Face API cannot be reached, the app automatically falls back to local ML models:
-- **Zero-shot classification** → Rule-based categorization with TF-IDF clustering
+If the Gemini API cannot be reached, the app automatically falls back to local ML models:
+- **Classification** → Rule-based categorization with TF-IDF clustering
 - **Embeddings** → TF-IDF features for anomaly detection and clustering
 
 The application will continue to function with reduced AI capabilities but full functionality for inventory analysis.

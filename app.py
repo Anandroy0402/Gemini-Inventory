@@ -92,32 +92,25 @@ MIN_DISTANCE_THRESHOLD = 1e-8  # Replace zero distances to avoid divide-by-zero 
 COMPARISON_WINDOW_SIZE = 50  # Windowed comparisons keep duplicate checks lightweight.
 FUZZY_SIMILARITY_THRESHOLD = 0.85
 SEMANTIC_SIMILARITY_THRESHOLD = 0.9
-HF_BATCH_SIZE = 16
-HF_ZERO_SHOT_MODEL = "facebook/bart-large-mnli"
-HF_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-HF_INFERENCE_API_URL = "https://api-inference.huggingface.co/models"
-HF_API_HOSTNAME = "api-inference.huggingface.co"
-HF_INFERENCE_TIMEOUT = 30
-ENABLE_HF_MODELS = resolve_bool_setting("ENABLE_HF_MODELS", default=False)
-HF_CONFIDENCE_MIN_THRESHOLD = 0.8
-HF_CONFIDENCE_MIN_TARGET = 0.6
-HF_CONFIDENCE_MAX_TARGET = 0.98
-HF_CONNECTION_CACHE_TTL = 30
-HF_CONNECTION_TEST_TEXT = "Inventory audit connection check."
-HF_MAX_RETRIES = 2  # Number of retries for transient failures
-HF_RETRY_DELAY = 2  # Base delay between retries in seconds
-HF_MAX_RETRY_DELAY = 10  # Maximum delay cap for exponential backoff
-HF_TOKEN_MIN_LENGTH = 20  # Minimum length for valid HF tokens
-HF_MODEL_LOADING_PATTERNS = [
-    "loading",
-    "is currently loading",
-    "model is loading"
-]  # Patterns indicating model is loading and should be retried
-HF_TOKEN_KEYS = (
-    "HF_TOKEN",
-    "HUGGINGFACEHUB_API_TOKEN",
-    "HUGGINGFACE_API_TOKEN",
-    "HUGGINGFACE_TOKEN"
+GEMINI_BATCH_SIZE = 16
+GEMINI_CLASSIFICATION_MODEL = "gemini-1.5-flash"
+GEMINI_EMBEDDING_MODEL = "text-embedding-004"
+GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+GEMINI_API_HOSTNAME = "generativelanguage.googleapis.com"
+GEMINI_API_TIMEOUT = 30
+ENABLE_GEMINI_MODELS = resolve_bool_setting("ENABLE_GEMINI_MODELS", default=False)
+GEMINI_CONFIDENCE_MIN_THRESHOLD = 0.8
+GEMINI_CONFIDENCE_MIN_TARGET = 0.6
+GEMINI_CONFIDENCE_MAX_TARGET = 0.98
+GEMINI_CONNECTION_CACHE_TTL = 30
+GEMINI_CONNECTION_TEST_TEXT = "Inventory audit connection check."
+GEMINI_MAX_RETRIES = 2  # Number of retries for transient failures
+GEMINI_RETRY_DELAY = 2  # Base delay between retries in seconds
+GEMINI_MAX_RETRY_DELAY = 10  # Maximum delay cap for exponential backoff
+GEMINI_API_KEY_MIN_LENGTH = 20  # Minimum length for valid Gemini API keys
+GEMINI_API_KEY_KEYS = (
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY"
 )
 
 PRODUCT_GROUPS = {
@@ -189,13 +182,13 @@ def normalize_confidence_scores(scores):
     if scores.empty:
         return scores
     max_score = scores.max()
-    if max_score >= HF_CONFIDENCE_MIN_THRESHOLD:
+    if max_score >= GEMINI_CONFIDENCE_MIN_THRESHOLD:
         return scores
     min_score = scores.min()
     if max_score == min_score:
-        return pd.Series(np.full(len(scores), max(max_score, HF_CONFIDENCE_MIN_TARGET)), index=scores.index)
+        return pd.Series(np.full(len(scores), max(max_score, GEMINI_CONFIDENCE_MIN_TARGET)), index=scores.index)
     scaled = (scores - min_score) / (max_score - min_score)
-    return (scaled * (HF_CONFIDENCE_MAX_TARGET - HF_CONFIDENCE_MIN_TARGET) + HF_CONFIDENCE_MIN_TARGET).round(4)
+    return (scaled * (GEMINI_CONFIDENCE_MAX_TARGET - GEMINI_CONFIDENCE_MIN_TARGET) + GEMINI_CONFIDENCE_MIN_TARGET).round(4)
 
 def build_fuzzy_duplicates(df, id_col):
     fuzzy_list = []
@@ -217,35 +210,30 @@ def build_fuzzy_duplicates(df, id_col):
                 })
     return fuzzy_list
 
-def get_hf_secret(key):
+def get_gemini_secret(key):
     secrets = get_streamlit_secrets()
     if key in secrets:
         return secrets[key]
     try:
-        return st.secrets[key]
-    except (AttributeError, KeyError):
+        return st.secrets.get(key)
+    except Exception:
         return None
 
-def get_hf_token():
-    for key in HF_TOKEN_KEYS:
-        token = os.getenv(key) or get_hf_secret(key)
-        if token:
-            token = str(token).strip()
-            if token:
-                return token
+def get_gemini_api_key():
+    for key in GEMINI_API_KEY_KEYS:
+        api_key = os.getenv(key) or get_gemini_secret(key)
+        if api_key:
+            api_key = str(api_key).strip()
+            if api_key:
+                return api_key
     return None
 
-def validate_hf_token(token):
-    """Validate that the token looks like a valid Hugging Face token."""
-    if not token:
+def validate_gemini_api_key(api_key):
+    """Validate that the API key looks like a valid Gemini API key."""
+    if not api_key:
         return False
-    token = str(token).strip()
-    # HF tokens typically start with 'hf_' and must meet minimum length requirement
-    if not token.startswith('hf_'):
-        return False
-    if len(token) < HF_TOKEN_MIN_LENGTH:
-        return False
-    return True
+    api_key = str(api_key).strip()
+    return len(api_key) >= GEMINI_API_KEY_MIN_LENGTH
 
 def check_dns_resolution(hostname):
     """Check if a hostname can be resolved via DNS."""
@@ -255,12 +243,12 @@ def check_dns_resolution(hostname):
     except (socket.gaierror, socket.herror, OSError):
         return False
 
-def check_hf_api_connectivity():
+def check_gemini_api_connectivity():
     """
-    Check if Hugging Face API is accessible.
+    Check if Gemini API is accessible.
     Returns a tuple: (is_accessible, error_message)
     """
-    hostname = HF_API_HOSTNAME
+    hostname = GEMINI_API_HOSTNAME
     
     # First check DNS resolution
     if not check_dns_resolution(hostname):
@@ -289,37 +277,29 @@ def check_hf_api_connectivity():
                 # Ignore errors during cleanup
                 pass
 
-def call_hf_inference(model, payload, token, warning_message, show_warnings=True, retry_count=0):
+def call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings=True, retry_count=0):
     """
-    Call Hugging Face Inference API with improved error handling and retry logic.
+    Call Gemini API with improved error handling and retry logic.
     Returns None on failure, result on success.
     """
-    if not token:
+    if not api_key:
         return None
     
     data = json.dumps(payload).encode("utf-8")
     req = request.Request(
-        f"{HF_INFERENCE_API_URL}/{model}",
+        f"{GEMINI_API_BASE_URL}/{endpoint}?key={api_key}",
         data=data,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        headers={"Content-Type": "application/json"}
     )
     
     try:
-        with request.urlopen(req, timeout=HF_INFERENCE_TIMEOUT) as response:
+        with request.urlopen(req, timeout=GEMINI_API_TIMEOUT) as response:
             result = json.loads(response.read().decode("utf-8"))
         
         # Check if API returned an error in the response
         if isinstance(result, dict) and result.get("error"):
-            error_msg = result.get('error', 'Unknown error')
-            
-            # Check if model is loading and we should retry
-            is_model_loading = any(pattern in error_msg.lower() for pattern in HF_MODEL_LOADING_PATTERNS)
-            
-            if is_model_loading and retry_count < HF_MAX_RETRIES:
-                # Exponential backoff with maximum delay cap
-                delay = min(HF_RETRY_DELAY * (2 ** retry_count), HF_MAX_RETRY_DELAY)
-                time.sleep(delay)
-                return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
+            error_info = result.get("error", {})
+            error_msg = error_info.get("message", "Unknown error")
             
             if show_warnings:
                 st.warning(f"{warning_message}: API returned error - {error_msg}")
@@ -330,27 +310,24 @@ def call_hf_inference(model, payload, token, warning_message, show_warnings=True
     except error.HTTPError as exc:
         # HTTP errors (4xx, 5xx)
         detail = f"HTTP {exc.code}"
-        is_retryable = False
+        is_retryable = exc.code in {429, 500, 503}
         
         if exc.code == 401:
-            detail += " - Invalid or expired token"
+            detail += " - Invalid or expired API key"
         elif exc.code == 403:
             detail += " - Access forbidden"
         elif exc.code == 429:
             detail += " - Rate limit exceeded"
-            is_retryable = True
         elif exc.code == 503:
             detail += " - Service temporarily unavailable"
-            is_retryable = True
         elif exc.code >= 500:
             detail += " - Server error"
-            is_retryable = True
         
         # Retry on transient errors with exponential backoff and cap
-        if is_retryable and retry_count < HF_MAX_RETRIES:
-            delay = min(HF_RETRY_DELAY * (2 ** retry_count), HF_MAX_RETRY_DELAY)
+        if is_retryable and retry_count < GEMINI_MAX_RETRIES:
+            delay = min(GEMINI_RETRY_DELAY * (2 ** retry_count), GEMINI_MAX_RETRY_DELAY)
             time.sleep(delay)
-            return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
+            return call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings, retry_count + 1)
         
         if show_warnings:
             st.warning(f"{warning_message}: {detail}")
@@ -362,7 +339,7 @@ def call_hf_inference(model, payload, token, warning_message, show_warnings=True
         
         if isinstance(exc.reason, socket.gaierror):
             # DNS resolution failure
-            detail = "DNS resolution failed - Hugging Face API may be blocked by firewall or network"
+            detail = "DNS resolution failed - Gemini API may be blocked by firewall or network"
         elif isinstance(exc.reason, socket.timeout):
             detail = "Connection timeout - Network may be slow or API unreachable"
         elif "Connection refused" in error_reason:
@@ -378,80 +355,165 @@ def call_hf_inference(model, payload, token, warning_message, show_warnings=True
         
     except socket.timeout:
         # Explicit timeout - could be transient
-        if retry_count < HF_MAX_RETRIES:
-            delay = min(HF_RETRY_DELAY * (2 ** retry_count), HF_MAX_RETRY_DELAY)
+        if retry_count < GEMINI_MAX_RETRIES:
+            delay = min(GEMINI_RETRY_DELAY * (2 ** retry_count), GEMINI_MAX_RETRY_DELAY)
             time.sleep(delay)
-            return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
+            return call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings, retry_count + 1)
         
         detail = "Request timeout - API response took too long"
         if show_warnings:
             st.warning(f"{warning_message}: {detail}")
         return None
         
-    except ValueError as exc:
+    except ValueError:
         # JSON parsing error
         detail = "Invalid response format - Could not parse API response"
         if show_warnings:
             st.warning(f"{warning_message}: {detail}")
         return None
 
-def run_hf_zero_shot(texts, labels):
-    token = get_hf_token()
-    if not token:
-        st.warning("Hugging Face token missing; skipping hosted classification.")
+def extract_json_from_text(text):
+    if not text:
+        return None
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?|```$", "", cleaned, flags=re.IGNORECASE).strip()
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+def normalize_gemini_label(label, labels):
+    if not label:
+        return None
+    label_text = str(label).strip().lower()
+    for candidate in labels:
+        if label_text == candidate.lower():
+            return candidate
+    for candidate in labels:
+        candidate_text = candidate.lower()
+        if label_text in candidate_text or candidate_text in label_text:
+            return candidate
+    return None
+
+def parse_gemini_classification_response(response_text, labels):
+    payload = extract_json_from_text(response_text)
+    label = None
+    confidence = 0.0
+    if isinstance(payload, dict):
+        label = payload.get("label") or payload.get("category") or payload.get("product_group")
+        confidence = payload.get("confidence", payload.get("score", 0.0))
+    elif response_text:
+        label = response_text.strip()
+    
+    label = normalize_gemini_label(label, labels)
+    if not label:
+        return None
+    
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = max(0.0, min(confidence, 1.0))
+    return {"labels": [label], "scores": [confidence]}
+
+def call_gemini_generate(prompt, api_key, warning_message, show_warnings=True):
+    payload = {
+        "contents": [
+            {"parts": [{"text": prompt}]}
+        ],
+        "generationConfig": {
+            "temperature": 0.0,
+            "maxOutputTokens": 128
+        }
+    }
+    result = call_gemini_api(
+        f"models/{GEMINI_CLASSIFICATION_MODEL}:generateContent",
+        payload,
+        api_key,
+        warning_message,
+        show_warnings=show_warnings
+    )
+    if not result:
+        return None
+    candidates = result.get("candidates") or []
+    if not candidates:
+        return None
+    parts = candidates[0].get("content", {}).get("parts") or []
+    text = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
+    return text.strip() if text else None
+
+def call_gemini_embedding(text, api_key, warning_message, show_warnings=True):
+    payload = {"content": {"parts": [{"text": text}]}}
+    result = call_gemini_api(
+        f"models/{GEMINI_EMBEDDING_MODEL}:embedContent",
+        payload,
+        api_key,
+        warning_message,
+        show_warnings=show_warnings
+    )
+    if not result:
+        return None
+    embedding = result.get("embedding", {}).get("values")
+    return embedding
+
+def build_gemini_prompt(text, labels):
+    labels_text = ", ".join(labels)
+    return (
+        "You are classifying an industrial inventory item. "
+        f"Choose the single best category from this list: {labels_text}. "
+        "Respond only with JSON in the form "
+        '{"label": "<category>", "confidence": <number between 0 and 1>}. '
+        f"Item: {text}"
+    )
+
+def run_gemini_classification(texts, labels):
+    api_key = get_gemini_api_key()
+    if not api_key:
+        st.warning("Gemini API key missing; skipping hosted classification.")
         return None
     if isinstance(texts, str):
         texts = [texts]
     try:
         results = []
-        for start in range(0, len(texts), HF_BATCH_SIZE):
-            batch = texts[start:start + HF_BATCH_SIZE]
-            payload = {
-                "inputs": batch,
-                "parameters": {
-                    "candidate_labels": labels,
-                    "hypothesis_template": "This industrial inventory item is {}"
-                },
-                "options": {"wait_for_model": True}
-            }
-            batch_results = call_hf_inference(
-                HF_ZERO_SHOT_MODEL,
-                payload,
-                token,
-                "Hugging Face classification failed; using existing categories."
-            )
-            if not batch_results:
-                return None
-            if isinstance(batch_results, dict):
-                batch_results = [batch_results]
-            results.extend(batch_results)
+        for start in range(0, len(texts), GEMINI_BATCH_SIZE):
+            batch = texts[start:start + GEMINI_BATCH_SIZE]
+            for text in batch:
+                prompt = build_gemini_prompt(text, labels)
+                response_text = call_gemini_generate(
+                    prompt,
+                    api_key,
+                    "Gemini classification failed; using existing categories."
+                )
+                parsed = parse_gemini_classification_response(response_text, labels)
+                if not parsed:
+                    return None
+                results.append(parsed)
         return results
     except (RuntimeError, ValueError):
-        st.warning("Hugging Face classification failed; using existing categories.")
+        st.warning("Gemini classification failed; using existing categories.")
         return None
 
 def compute_embeddings(texts):
-    token = get_hf_token()
-    if not token:
-        st.warning("Hugging Face token missing; skipping hosted embeddings.")
+    api_key = get_gemini_api_key()
+    if not api_key:
+        st.warning("Gemini API key missing; skipping hosted embeddings.")
         return None
     try:
         embeddings = []
-        for start in range(0, len(texts), HF_BATCH_SIZE):
-            batch = texts[start:start + HF_BATCH_SIZE]
-            payload = {"inputs": batch, "options": {"wait_for_model": True}}
-            batch_embeddings = call_hf_inference(
-                HF_EMBEDDING_MODEL,
-                payload,
-                token,
-                "Embedding generation failed; falling back to TF-IDF signals."
-            )
-            if not batch_embeddings:
-                return None
-            if isinstance(batch_embeddings, list) and len(batch_embeddings) > 0 and isinstance(batch_embeddings[0], (int, float)):
-                # Hugging Face returns a flat list for single inputs; wrap for consistent batching.
-                batch_embeddings = [batch_embeddings]
-            embeddings.extend(batch_embeddings)
+        for start in range(0, len(texts), GEMINI_BATCH_SIZE):
+            batch = texts[start:start + GEMINI_BATCH_SIZE]
+            for text in batch:
+                embedding = call_gemini_embedding(
+                    text,
+                    api_key,
+                    "Embedding generation failed; falling back to TF-IDF signals."
+                )
+                if not embedding:
+                    return None
+                embeddings.append(embedding)
         embeddings = np.array(embeddings, dtype=float)
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms[norms == 0] = 1
@@ -460,18 +522,18 @@ def compute_embeddings(texts):
         st.warning("Embedding generation failed; falling back to TF-IDF signals.")
         return None
 
-def is_valid_zero_shot_item(item):
+def is_valid_classification_item(item):
     if not isinstance(item, dict):
         return False
     labels = item.get("labels")
     scores = item.get("scores")
     return isinstance(labels, list) and isinstance(scores, list) and bool(labels) and bool(scores)
 
-def is_valid_zero_shot_response(result):
+def is_valid_classification_response(result):
     if isinstance(result, dict):
-        return is_valid_zero_shot_item(result)
+        return is_valid_classification_item(result)
     if isinstance(result, list) and result:
-        return all(is_valid_zero_shot_item(item) for item in result)
+        return all(is_valid_classification_item(item) for item in result)
     return False
 
 def is_valid_embedding_response(result):
@@ -483,50 +545,50 @@ def is_valid_embedding_response(result):
         return all(isinstance(x, (int, float)) for x in result[0])
     return False
 
-@st.cache_data(ttl=HF_CONNECTION_CACHE_TTL)
-def test_hf_inference_connection(enable_hf_models):
+@st.cache_data(ttl=GEMINI_CONNECTION_CACHE_TTL)
+def test_gemini_inference_connection(enable_gemini_models):
     """
-    Test connection to Hugging Face Inference API with comprehensive diagnostics.
+    Test connection to Gemini API with comprehensive diagnostics.
     Returns a dict with connection status and detailed error information.
     """
-    if not enable_hf_models:
+    if not enable_gemini_models:
         return {
             "enabled": False,
-            "zero_shot": False,
+            "classification": False,
             "embeddings": False,
             "reason": "disabled",
             "status": "disabled",
             "error_detail": None
         }
     
-    # Check if token exists
-    token = get_hf_token()
-    if not token:
+    # Check if API key exists
+    api_key = get_gemini_api_key()
+    if not api_key:
         return {
             "enabled": False,
-            "zero_shot": False,
+            "classification": False,
             "embeddings": False,
-            "reason": "missing_token",
-            "status": "missing_token",
-            "error_detail": "No Hugging Face token found in environment or secrets"
+            "reason": "missing_key",
+            "status": "missing_key",
+            "error_detail": "No Gemini API key found in environment or secrets"
         }
     
-    # Validate token format
-    if not validate_hf_token(token):
+    # Validate API key format
+    if not validate_gemini_api_key(api_key):
         return {
             "enabled": False,
-            "zero_shot": False,
+            "classification": False,
             "embeddings": False,
-            "reason": "invalid_token",
-            "status": "invalid_token",
-            "error_detail": f"Token format is invalid (should start with 'hf_' and be at least {HF_TOKEN_MIN_LENGTH} characters)"
+            "reason": "invalid_key",
+            "status": "invalid_key",
+            "error_detail": f"API key format is invalid (should be at least {GEMINI_API_KEY_MIN_LENGTH} characters)"
         }
     
-    # Check network connectivity to HF API
-    is_accessible, conn_error = check_hf_api_connectivity()
+    # Check network connectivity to Gemini API
+    is_accessible, conn_error = check_gemini_api_connectivity()
     if not is_accessible:
         error_details = {
-            "dns_resolution_failed": f"Cannot resolve {HF_API_HOSTNAME} - May be blocked by firewall or network policy",
+            "dns_resolution_failed": f"Cannot resolve {GEMINI_API_HOSTNAME} - May be blocked by firewall or network policy",
             "connection_timeout": "Connection timeout - Network may be slow or API unreachable",
             "connection_refused": "Connection refused - Service may be down or blocked",
         }
@@ -534,7 +596,7 @@ def test_hf_inference_connection(enable_hf_models):
         
         return {
             "enabled": False,
-            "zero_shot": False,
+            "classification": False,
             "embeddings": False,
             "reason": "network_unreachable",
             "status": "network_unreachable",
@@ -542,59 +604,49 @@ def test_hf_inference_connection(enable_hf_models):
             "connectivity_error": conn_error
         }
     
-    # Test zero-shot classification model
-    test_text = HF_CONNECTION_TEST_TEXT
-    zero_shot_payload = {
-        "inputs": [test_text],
-        "parameters": {
-            "candidate_labels": list(PRODUCT_GROUPS.keys()),
-            "hypothesis_template": "This industrial inventory item is {}"
-        },
-        "options": {"wait_for_model": True}
-    }
-    
-    zero_shot_result = call_hf_inference(
-        HF_ZERO_SHOT_MODEL,
-        zero_shot_payload,
-        token,
-        "Hugging Face zero-shot classification test failed",
+    # Test classification model
+    test_text = GEMINI_CONNECTION_TEST_TEXT
+    prompt = build_gemini_prompt(test_text, list(PRODUCT_GROUPS.keys()))
+    classification_text = call_gemini_generate(
+        prompt,
+        api_key,
+        "Gemini classification test failed",
         show_warnings=False
     )
-    zero_shot_ok = is_valid_zero_shot_response(zero_shot_result)
+    classification_result = parse_gemini_classification_response(classification_text, list(PRODUCT_GROUPS.keys()))
+    classification_ok = is_valid_classification_response(classification_result)
     
     # Test embedding model
-    embedding_payload = {"inputs": [test_text], "options": {"wait_for_model": True}}
-    embedding_result = call_hf_inference(
-        HF_EMBEDDING_MODEL,
-        embedding_payload,
-        token,
-        "Hugging Face embedding test failed",
+    embedding_result = call_gemini_embedding(
+        test_text,
+        api_key,
+        "Gemini embedding test failed",
         show_warnings=False
     )
     embedding_ok = is_valid_embedding_response(embedding_result)
     
     # Determine overall status
-    if zero_shot_ok and embedding_ok:
+    if classification_ok and embedding_ok:
         status = "full"
         error_detail = None
-    elif zero_shot_ok or embedding_ok:
+    elif classification_ok or embedding_ok:
         status = "partial"
         failed_models = []
-        if not zero_shot_ok:
-            failed_models.append("zero-shot classification")
+        if not classification_ok:
+            failed_models.append("classification")
         if not embedding_ok:
             failed_models.append("embeddings")
         error_detail = f"Some models unavailable: {', '.join(failed_models)}"
     else:
         status = "unavailable"
-        error_detail = "Both zero-shot classification and embedding models failed to respond"
+        error_detail = "Both classification and embedding models failed to respond"
     
     enabled = status in {"full", "partial"}
     reason = None if enabled else "inference_test_failed"
     
     return {
         "enabled": enabled,
-        "zero_shot": zero_shot_ok,
+        "classification": classification_ok,
         "embeddings": embedding_ok,
         "reason": reason,
         "status": status,
@@ -603,7 +655,7 @@ def test_hf_inference_connection(enable_hf_models):
 
 # --- MAIN ENGINE ---
 @st.cache_data
-def run_intelligent_audit(file_path, enable_hf_zero_shot=False, enable_hf_embeddings=False):
+def run_intelligent_audit(file_path, enable_gemini_classification=False, enable_gemini_embeddings=False):
     df = pd.read_csv(file_path, encoding='latin1')
     df.columns = [c.strip() for c in df.columns]
     id_col = next(c for c in df.columns if any(x in c.lower() for x in ['item', 'no']))
@@ -631,43 +683,43 @@ def run_intelligent_audit(file_path, enable_hf_zero_shot=False, enable_hf_embedd
     iso = IsolationForest(contamination=0.04, random_state=42)
     df['Anomaly_Flag'] = iso.fit_predict(tfidf_matrix) # Using tfidf for complexity-based anomalies
 
-    standard_desc = df['Standard_Desc'].tolist() if enable_hf_embeddings else None
-    hf_inputs = (
+    standard_desc = df['Standard_Desc'].tolist() if enable_gemini_embeddings else None
+    gemini_inputs = (
         df['Part_Noun']
         .fillna('')
         .str.cat(df['Standard_Desc'].fillna(''), sep=' ')
         .str.replace(r'\s+', ' ', regex=True)
         .str.strip()
         .tolist()
-        if enable_hf_zero_shot else None
+        if enable_gemini_classification else None
     )
-
-    # Hugging Face Zero-Shot Classification
-    hf_results = run_hf_zero_shot(hf_inputs, list(PRODUCT_GROUPS.keys())) if enable_hf_zero_shot else None
-    if hf_results:
-        df['HF_Product_Group'] = [res['labels'][0] for res in hf_results]
-        df['HF_Product_Confidence'] = [round(res['scores'][0], 4) for res in hf_results]
+    
+    # Gemini Classification
+    gemini_results = run_gemini_classification(gemini_inputs, list(PRODUCT_GROUPS.keys())) if enable_gemini_classification else None
+    if gemini_results:
+        df['Gemini_Product_Group'] = [res['labels'][0] for res in gemini_results]
+        df['Gemini_Product_Confidence'] = [round(res['scores'][0], 4) for res in gemini_results]
     else:
-        df['HF_Product_Group'] = df['Product_Group']
-        df['HF_Product_Confidence'] = df['Confidence']
-    df['HF_Product_Confidence'] = normalize_confidence_scores(df['HF_Product_Confidence'])
-
-    # Hugging Face Embeddings for Clustering/Anomaly
-    embeddings = compute_embeddings(standard_desc) if enable_hf_embeddings else None
+        df['Gemini_Product_Group'] = df['Product_Group']
+        df['Gemini_Product_Confidence'] = df['Confidence']
+    df['Gemini_Product_Confidence'] = normalize_confidence_scores(df['Gemini_Product_Confidence'])
+    
+    # Gemini Embeddings for Clustering/Anomaly
+    embeddings = compute_embeddings(standard_desc) if enable_gemini_embeddings else None
     if embeddings is not None:
-        kmeans_hf = KMeans(n_clusters=8, random_state=42, n_init=10)
-        df['HF_Cluster_ID'] = kmeans_hf.fit_predict(embeddings)
-        hf_dists = kmeans_hf.transform(embeddings)
-        max_dist = apply_distance_floor(hf_dists)
-        df['HF_Cluster_Confidence'] = (1 - (np.min(hf_dists, axis=1) / max_dist)).round(4)
-        iso_hf = IsolationForest(contamination=0.04, random_state=42)
-        df['HF_Anomaly_Flag'] = iso_hf.fit_predict(embeddings)
-        df['HF_Embedding'] = list(embeddings)
+        kmeans_gemini = KMeans(n_clusters=8, random_state=42, n_init=10)
+        df['Gemini_Cluster_ID'] = kmeans_gemini.fit_predict(embeddings)
+        gemini_dists = kmeans_gemini.transform(embeddings)
+        max_dist = apply_distance_floor(gemini_dists)
+        df['Gemini_Cluster_Confidence'] = (1 - (np.min(gemini_dists, axis=1) / max_dist)).round(4)
+        iso_gemini = IsolationForest(contamination=0.04, random_state=42)
+        df['Gemini_Anomaly_Flag'] = iso_gemini.fit_predict(embeddings)
+        df['Gemini_Embedding'] = list(embeddings)
     else:
-        df['HF_Cluster_ID'] = df['Cluster_ID']
-        df['HF_Cluster_Confidence'] = df['Confidence']
-        df['HF_Anomaly_Flag'] = df['Anomaly_Flag']
-        df['HF_Embedding'] = [None] * len(df)
+        df['Gemini_Cluster_ID'] = df['Cluster_ID']
+        df['Gemini_Cluster_Confidence'] = df['Confidence']
+        df['Gemini_Anomaly_Flag'] = df['Anomaly_Flag']
+        df['Gemini_Embedding'] = [None] * len(df)
 
     # Fuzzy & Tech DNA
     df['Tech_DNA'] = df['Standard_Desc'].apply(get_tech_dna)
@@ -675,13 +727,13 @@ def run_intelligent_audit(file_path, enable_hf_zero_shot=False, enable_hf_embedd
     return df, id_col, desc_col
 
 # --- DATA LOADING ---
-hf_status = test_hf_inference_connection(ENABLE_HF_MODELS)
+gemini_status = test_gemini_inference_connection(ENABLE_GEMINI_MODELS)
 target_file = 'raw_data.csv'
 if os.path.exists(target_file):
     df_raw, id_col, desc_col = run_intelligent_audit(
         target_file,
-        enable_hf_zero_shot=hf_status["zero_shot"],
-        enable_hf_embeddings=hf_status["embeddings"]
+        enable_gemini_classification=gemini_status["classification"],
+        enable_gemini_embeddings=gemini_status["embeddings"]
     )
 else:
     st.error("Data file missing from repository. Please ensure 'raw_data.csv' is present.")
@@ -694,61 +746,60 @@ group_options = list(PRODUCT_GROUPS.keys())
 st.title("🛡️ AI Inventory Auditor Pro")
 st.markdown("### Advanced Inventory Intelligence & Quality Management")
 
-# Display HF connection status with detailed messaging
-if hf_status["enabled"]:
+# Display Gemini connection status with detailed messaging
+if gemini_status["enabled"]:
     enabled_features = []
-    if hf_status["zero_shot"]:
-        enabled_features.append("zero-shot classification")
-    if hf_status["embeddings"]:
+    if gemini_status["classification"]:
+        enabled_features.append("classification")
+    if gemini_status["embeddings"]:
         enabled_features.append("embeddings")
     feature_label = ", ".join(enabled_features)
-    status_label = hf_status.get("status", "partial")
+    status_label = gemini_status.get("status", "partial")
     if status_label not in {"full", "partial"}:
         status_label = "partial"
-    st.success(f"✅ Hugging Face Inference API connected ({status_label}: {feature_label}).")
+    st.success(f"✅ Gemini API connected ({status_label}: {feature_label}).")
     
     # Show warning if partial connectivity
-    if status_label == "partial" and hf_status.get("error_detail"):
-        st.info(f"ℹ️ Note: {hf_status['error_detail']}")
+    if status_label == "partial" and gemini_status.get("error_detail"):
+        st.info(f"ℹ️ Note: {gemini_status['error_detail']}")
 
-elif hf_status["reason"] == "disabled":
-    st.info("ℹ️ **Hugging Face models disabled.** Using local ML models for analysis.\n\n"
+elif gemini_status["reason"] == "disabled":
+    st.info("ℹ️ **Gemini models disabled.** Using local ML models for analysis.\n\n"
             "To enable hosted inference:\n"
-            "- Set `ENABLE_HF_MODELS=true` in environment or `.streamlit/secrets.toml`\n"
-            "- Provide a token via `HF_TOKEN` environment variable or secrets")
+            "- Set `ENABLE_GEMINI_MODELS=true` in environment or `.streamlit/secrets.toml`\n"
+            "- Provide a key via `GEMINI_API_KEY` environment variable or secrets")
 
-elif hf_status["reason"] == "missing_token":
-    st.warning("⚠️ **Hugging Face token missing.** Using local signals instead of hosted inference.\n\n"
+elif gemini_status["reason"] == "missing_key":
+    st.warning("⚠️ **Gemini API key missing.** Using local signals instead of hosted inference.\n\n"
                "To enable hosted models:\n"
-               "- Obtain a token from https://huggingface.co/settings/tokens\n"
-               "- Set via environment variable: `HF_TOKEN=your_token`\n"
-               "- Or add to `.streamlit/secrets.toml`: `HF_TOKEN = \"your_token\"`")
+               "- Create a Gemini API key in Google AI Studio\n"
+               "- Set via environment variable: `GEMINI_API_KEY=your_key`\n"
+               "- Or add to `.streamlit/secrets.toml`: `GEMINI_API_KEY = \"your_key\"`")
 
-elif hf_status["reason"] == "invalid_token":
-    st.warning("⚠️ **Hugging Face token format is invalid.** Using local signals instead.\n\n"
-               f"Details: {hf_status.get('error_detail', 'Token validation failed')}\n\n"
-               "Valid tokens should:\n"
-               "- Start with 'hf_'\n"
-               f"- Be at least {HF_TOKEN_MIN_LENGTH} characters long\n"
-               "- Obtain from https://huggingface.co/settings/tokens")
+elif gemini_status["reason"] == "invalid_key":
+    st.warning("⚠️ **Gemini API key format is invalid.** Using local signals instead.\n\n"
+               f"Details: {gemini_status.get('error_detail', 'API key validation failed')}\n\n"
+               "Valid keys should:\n"
+               f"- Be at least {GEMINI_API_KEY_MIN_LENGTH} characters long\n"
+               "- Obtain from Google AI Studio")
 
-elif hf_status["reason"] == "network_unreachable":
-    st.error("🚫 **Cannot reach Hugging Face API.** Using local signals instead.\n\n"
-             f"**Issue:** {hf_status.get('error_detail', 'Network connectivity problem')}\n\n"
+elif gemini_status["reason"] == "network_unreachable":
+    st.error("🚫 **Cannot reach Gemini API.** Using local signals instead.\n\n"
+             f"**Issue:** {gemini_status.get('error_detail', 'Network connectivity problem')}\n\n"
              "**Possible causes:**\n"
-             f"- Corporate firewall blocking {HF_API_HOSTNAME}\n"
+             f"- Corporate firewall blocking {GEMINI_API_HOSTNAME}\n"
              "- Network policy restrictions\n"
              "- DNS resolution issues\n"
              "- Internet connectivity problems\n\n"
              "**Resolution:**\n"
-             f"- Contact your network administrator to whitelist {HF_API_HOSTNAME}\n"
+             f"- Contact your network administrator to whitelist {GEMINI_API_HOSTNAME}\n"
              "- Check your network/firewall settings\n"
              "- Verify internet connectivity")
 
 else:
     # Generic failure
-    error_detail = hf_status.get('error_detail', 'Connection test failed')
-    st.warning(f"⚠️ **Hugging Face Inference API connection test failed.** Using local signals instead.\n\n"
+    error_detail = gemini_status.get('error_detail', 'Connection test failed')
+    st.warning(f"⚠️ **Gemini API connection test failed.** Using local signals instead.\n\n"
                f"Details: {error_detail}\n\n"
                "The application will continue using local ML models for analysis.")
 
@@ -774,15 +825,15 @@ with page[0]:
     fuzzy_list = build_fuzzy_duplicates(df, id_col)
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     kpi1.metric("📦 SKUs Analyzed", len(df))
-    kpi2.metric("🎯 Mean HF Confidence", f"{df['HF_Product_Confidence'].mean():.1%}")
-    kpi3.metric("⚠️ HF Anomalies Found", len(df[df['HF_Anomaly_Flag'] == -1]))
+    kpi2.metric("🎯 Mean Gemini Confidence", f"{df['Gemini_Product_Confidence'].mean():.1%}")
+    kpi3.metric("⚠️ Gemini Anomalies Found", len(df[df['Gemini_Anomaly_Flag'] == -1]))
     kpi4.metric("🔄 Duplicate Pairs", len(fuzzy_list))
 
     st.markdown("---")
     
     col1, col2 = st.columns(2)
     with col1:
-        fig_pie = px.pie(df, names='HF_Product_Group', title="Inventory Distribution by HF Product Category", hole=0.4)
+        fig_pie = px.pie(df, names='Gemini_Product_Group', title="Inventory Distribution by Gemini Product Category", hole=0.4)
         st.plotly_chart(fig_pie, use_container_width=True)
     with col2:
         top_nouns = df['Part_Noun'].value_counts().head(10).reset_index()
@@ -790,7 +841,7 @@ with page[0]:
         st.plotly_chart(fig_bar, use_container_width=True)
 
     # Health Gauge
-    health_val = (len(df[df['HF_Anomaly_Flag'] == 1]) / len(df)) * 100
+    health_val = (len(df[df['Gemini_Anomaly_Flag'] == 1]) / len(df)) * 100
     fig_gauge = go.Figure(go.Indicator(
         mode = "gauge+number",
         value = health_val,
@@ -801,24 +852,24 @@ with page[0]:
 
     st.markdown("#### 💼 Business Insights")
     insights = (
-        df.groupby('HF_Product_Group', dropna=False)
+        df.groupby('Gemini_Product_Group', dropna=False)
         .agg(
             Items=(id_col, 'count'),
-            Mean_HF_Confidence=('HF_Product_Confidence', 'mean'),
-            HF_Anomaly_Rate=('HF_Anomaly_Flag', lambda x: (x == -1).mean())
+            Mean_Gemini_Confidence=('Gemini_Product_Confidence', 'mean'),
+            Gemini_Anomaly_Rate=('Gemini_Anomaly_Flag', lambda x: (x == -1).mean())
         )
         .reset_index()
         .sort_values('Items', ascending=False)
     )
-    insights['Mean_HF_Confidence'] = insights['Mean_HF_Confidence'].round(3)
-    insights['HF_Anomaly_Rate'] = insights['HF_Anomaly_Rate'].round(3)
+    insights['Mean_Gemini_Confidence'] = insights['Mean_Gemini_Confidence'].round(3)
+    insights['Gemini_Anomaly_Rate'] = insights['Gemini_Anomaly_Rate'].round(3)
     st.dataframe(insights, use_container_width=True, height=260)
     fig_insights = px.bar(
         insights.head(10),
-        x='HF_Product_Group',
-        y='Mean_HF_Confidence',
-        title="Top HF Categories by Confidence",
-        labels={'HF_Product_Group': 'HF Category', 'Mean_HF_Confidence': 'Mean Confidence'}
+        x='Gemini_Product_Group',
+        y='Mean_Gemini_Confidence',
+        title="Top Gemini Categories by Confidence",
+        labels={'Gemini_Product_Group': 'Gemini Category', 'Mean_Gemini_Confidence': 'Mean Confidence'}
     )
     st.plotly_chart(fig_insights, use_container_width=True)
 
@@ -846,11 +897,11 @@ with page[1]:
                 'Standard_Desc',
                 'Part_Noun',
                 'Product_Group',
-                'HF_Product_Group',
-                'HF_Product_Confidence',
+                'Gemini_Product_Group',
+                'Gemini_Product_Confidence',
                 'Confidence'
             ]
-        ].sort_values('HF_Product_Confidence', ascending=False),
+        ].sort_values('Gemini_Product_Confidence', ascending=False),
         use_container_width=True,
         height=400
     )
@@ -860,20 +911,20 @@ with page[1]:
         .agg(
             Items=(id_col, 'count'),
             Mean_Confidence=('Confidence', 'mean'),
-            Mean_HF_Confidence=('HF_Product_Confidence', 'mean'),
+            Mean_Gemini_Confidence=('Gemini_Product_Confidence', 'mean'),
             Cluster_Match_Rate=('Cluster_Validated', 'mean')
         )
         .reset_index()
         .sort_values('Items', ascending=False)
     )
     summary['Mean_Confidence'] = summary['Mean_Confidence'].round(3)
-    summary['Mean_HF_Confidence'] = summary['Mean_HF_Confidence'].round(3)
+    summary['Mean_Gemini_Confidence'] = summary['Mean_Gemini_Confidence'].round(3)
     summary['Cluster_Match_Rate'] = summary['Cluster_Match_Rate'].round(3)
     st.markdown("#### 📌 Category Distribution & Confidence")
     st.dataframe(summary, use_container_width=True, height=260)
 
     # Distribution of confidence
-    fig_hist = px.histogram(df, x="HF_Product_Confidence", nbins=20, title="HF Confidence Score Distribution", color_discrete_sequence=['#636EFA'])
+    fig_hist = px.histogram(df, x="Gemini_Product_Confidence", nbins=20, title="Gemini Confidence Score Distribution", color_discrete_sequence=['#636EFA'])
     st.plotly_chart(fig_hist, use_container_width=True)
 
 # --- PAGE: QUALITY HUB ---
@@ -891,14 +942,14 @@ with page[2]:
     
     st.markdown("---")
     
-    t1, t2, t3 = st.tabs(["⚠️ HF Anomalies", "👯 Fuzzy Duplicates", "🧠 Semantic Duplicates"])
+    t1, t2, t3 = st.tabs(["⚠️ Gemini Anomalies", "👯 Fuzzy Duplicates", "🧠 Semantic Duplicates"])
     
     with t1:
-        st.subheader("HF Embedding Anomalies (Isolation Forest)")
-        anoms = df[df['HF_Anomaly_Flag'] == -1]
+        st.subheader("Gemini Embedding Anomalies (Isolation Forest)")
+        anoms = df[df['Gemini_Anomaly_Flag'] == -1]
         st.warning(f"Found {len(anoms)} anomalies in the current view.")
         st.dataframe(
-            anoms[[id_col, desc_col, 'Part_Noun', 'HF_Product_Group', 'HF_Cluster_Confidence']],
+            anoms[[id_col, desc_col, 'Part_Noun', 'Gemini_Product_Group', 'Gemini_Cluster_Confidence']],
             use_container_width=True,
             height=400
         )
@@ -916,17 +967,17 @@ with page[2]:
             st.success("No fuzzy duplicates found in this filtered view.")
 
     with t3:
-        st.subheader("Semantic Duplicate Audit (Sentence-Transformers)")
-        if df['HF_Embedding'].apply(lambda x: x is None).all():
-            st.info("Semantic duplicate detection unavailable (HF embeddings not loaded).")
+        st.subheader("Semantic Duplicate Audit (Gemini Embeddings)")
+        if df['Gemini_Embedding'].apply(lambda x: x is None).all():
+            st.info("Semantic duplicate detection unavailable (Gemini embeddings not loaded).")
         else:
             records = df.reset_index(drop=True)
-            if records['HF_Embedding'].apply(lambda x: x is None).any():
-                st.info("Semantic duplicate detection unavailable (HF embeddings incomplete).")
+            if records['Gemini_Embedding'].apply(lambda x: x is None).any():
+                st.info("Semantic duplicate detection unavailable (Gemini embeddings incomplete).")
             else:
                 sem_list = []
                 recs = records.to_dict('records')
-                embeddings = records['HF_Embedding'].tolist()
+                embeddings = records['Gemini_Embedding'].tolist()
                 window_size = COMPARISON_WINDOW_SIZE  # Keep comparisons lightweight for UI responsiveness.
                 for i in range(len(recs)):
                     for j in range(i + 1, min(i + window_size, len(recs))):
@@ -950,22 +1001,22 @@ with page[3]:
     st.markdown("Understand the advanced algorithms powering this inventory intelligence system.")
     
     # Add Connection Diagnostics Section
-    with st.expander("🔍 Hugging Face Connection Diagnostics", expanded=False):
+    with st.expander("🔍 Gemini Connection Diagnostics", expanded=False):
         st.markdown("### Connection Status")
         
         # Display status overview
         col1, col2, col3 = st.columns(3)
         with col1:
-            if hf_status["enabled"]:
+            if gemini_status["enabled"]:
                 st.metric("Status", "✅ Connected", delta=None)
             else:
                 st.metric("Status", "❌ Disconnected", delta=None)
         
         with col2:
-            st.metric("Zero-Shot", "✅ OK" if hf_status["zero_shot"] else "❌ Failed")
+            st.metric("Classification", "✅ OK" if gemini_status["classification"] else "❌ Failed")
         
         with col3:
-            st.metric("Embeddings", "✅ OK" if hf_status["embeddings"] else "❌ Failed")
+            st.metric("Embeddings", "✅ OK" if gemini_status["embeddings"] else "❌ Failed")
         
         st.markdown("---")
         
@@ -973,51 +1024,51 @@ with page[3]:
         st.markdown("### Diagnostic Details")
         
         # Token status
-        token = get_hf_token()
-        st.markdown(f"**Token Status:** {'✅ Present' if token else '❌ Missing'}")
-        if token:
-            is_valid = validate_hf_token(token)
-            st.markdown(f"**Token Validation:** {'✅ Valid format' if is_valid else '❌ Invalid format'}")
+        api_key = get_gemini_api_key()
+        st.markdown(f"**API Key Status:** {'✅ Present' if api_key else '❌ Missing'}")
+        if api_key:
+            is_valid = validate_gemini_api_key(api_key)
+            st.markdown(f"**API Key Validation:** {'✅ Valid format' if is_valid else '❌ Invalid format'}")
         
         # Network connectivity
         st.markdown("**Network Tests:**")
-        dns_ok = check_dns_resolution(HF_API_HOSTNAME)
+        dns_ok = check_dns_resolution(GEMINI_API_HOSTNAME)
         st.markdown(f"- DNS Resolution: {'✅ OK' if dns_ok else '❌ Failed'}")
         
-        is_accessible, conn_error = check_hf_api_connectivity()
+        is_accessible, conn_error = check_gemini_api_connectivity()
         st.markdown(f"- TCP Connectivity: {'✅ OK' if is_accessible else '❌ Failed'}")
         if conn_error:
             st.markdown(f"  - Error: `{conn_error}`")
         
         # Overall reason
-        if hf_status.get("reason"):
-            st.markdown(f"**Overall Status:** `{hf_status['reason']}`")
+        if gemini_status.get("reason"):
+            st.markdown(f"**Overall Status:** `{gemini_status['reason']}`")
         
-        if hf_status.get("error_detail"):
-            st.markdown(f"**Error Details:** {hf_status['error_detail']}")
+        if gemini_status.get("error_detail"):
+            st.markdown(f"**Error Details:** {gemini_status['error_detail']}")
         
         # Configuration info
         st.markdown("---")
         st.markdown("### Configuration")
-        st.markdown(f"**ENABLE_HF_MODELS:** `{ENABLE_HF_MODELS}`")
-        st.markdown(f"**HF_INFERENCE_API_URL:** `{HF_INFERENCE_API_URL}`")
-        st.markdown(f"**HF_INFERENCE_TIMEOUT:** `{HF_INFERENCE_TIMEOUT}s`")
+        st.markdown(f"**ENABLE_GEMINI_MODELS:** `{ENABLE_GEMINI_MODELS}`")
+        st.markdown(f"**GEMINI_API_BASE_URL:** `{GEMINI_API_BASE_URL}`")
+        st.markdown(f"**GEMINI_API_TIMEOUT:** `{GEMINI_API_TIMEOUT}s`")
         st.markdown(f"**Models:**")
-        st.markdown(f"- Zero-Shot: `{HF_ZERO_SHOT_MODEL}`")
-        st.markdown(f"- Embeddings: `{HF_EMBEDDING_MODEL}`")
+        st.markdown(f"- Classification: `{GEMINI_CLASSIFICATION_MODEL}`")
+        st.markdown(f"- Embeddings: `{GEMINI_EMBEDDING_MODEL}`")
     
     st.markdown("""
     ### 1. Data Processing (ETL)
     We standardize the raw 543 rows by stripping quote artifacts, uppercasing, and cleaning symbols. We utilize **RegEx** to extract technical specifications (Numbers, Sizes, Genders) into a "Technical DNA" profile for every part.
     
     ### 2. Intelligent Categorization
-    Instead of standard K-Means (which is biased by word frequency), we use a **Prioritized Knowledge Base** to anchor nouns to super-categories. We also run a cached Hugging Face **zero-shot classifier** (facebook/bart-large-mnli) to assign *HF_Product_Group* labels with confidence scores.
+    Instead of standard K-Means (which is biased by word frequency), we use a **Prioritized Knowledge Base** to anchor nouns to super-categories. We also run a cached Gemini **classification model** (gemini-1.5-flash) to assign *Gemini_Product_Group* labels with confidence scores.
     
     ### 3. Cluster Validation
-    We validate the knowledge-anchored categories against **K-Means** clusters to ensure semantic consistency before scoring confidence. A sentence-transformer model (all-MiniLM-L6-v2) powers additional HF clustering confidence on semantic embeddings.
+    We validate the knowledge-anchored categories against **K-Means** clusters to ensure semantic consistency before scoring confidence. Gemini embeddings (text-embedding-004) power additional clustering confidence on semantic embeddings.
     
     ### 4. Anomaly Detection
-    We use the **Isolation Forest** algorithm on both TF-IDF features and Hugging Face embeddings to flag unusual items with *HF_Anomaly_Flag*.
+    We use the **Isolation Forest** algorithm on both TF-IDF features and Gemini embeddings to flag unusual items with *Gemini_Anomaly_Flag*.
     
     ### 5. Fuzzy Match & Conflict Resolution
     We use the **Levenshtein Distance** algorithm. However, we've added a **Business Logic Layer**: if two items have similar text but conflicting 'Technical DNA' (e.g. one is Male, one is Female), the system overrides the AI and flags it as a **Variant**, not a duplicate. We also run a semantic duplicate check using cosine similarity on sentence-transformer embeddings within a small window.
@@ -1033,7 +1084,7 @@ with page[4]:
     <ol>
         <li><p><b>Heuristic Layer:</b> Uses a predefined Knowledge Base and Regular Expressions (RegEx) for absolute technical accuracy.</p></li>
         <li><p><b>Statistical Layer (Classical ML):</b> Employs <b>TF-IDF</b>, <b>K-Means</b>, and <b>Isolation Forest</b> for pattern recognition and anomaly detection based on the specific dataset.</p></li>
-        <li><p><b>Neural Layer (Deep Learning):</b> Leverages <b>Hugging Face Inference APIs</b> (BART and Sentence-Transformers) for semantic understanding and zero-shot classification.</p></li>
+        <li><p><b>Neural Layer (Deep Learning):</b> Leverages the <b>Gemini API</b> (Gemini 1.5 Flash and text-embedding-004) for semantic understanding and classification.</p></li>
     </ol>
     <hr>
     <h2>🛠️ Phase 1: Data Standardization &amp; "Tech DNA" Extraction</h2>
@@ -1047,8 +1098,8 @@ with page[4]:
     <p>To ensure items are placed in the correct <code>Product_Group</code>, the app runs a parallel classification process:</p>
     <h3>1. Rule-Based Noun Extraction</h3>
     <p>The <code>intelligent_noun_extractor</code> uses a prioritized list of phrases (e.g., "BALL VALVE" takes precedence over "VALVE") to identify the "Part Noun."</p>
-    <h3>2. Zero-Shot Classification (Deep Learning)</h3>
-    <p>If enabled, the system calls the <code>facebook/bart-large-mnli</code> model. Unlike traditional models, this does not require training on your specific data; it uses its pre-trained "knowledge" of the English language to categorize items into labels like "Fasteners &amp; Seals" or "Piping &amp; Fittings."</p>
+    <h3>2. Gemini Classification (Deep Learning)</h3>
+    <p>If enabled, the system calls the <code>gemini-1.5-flash</code> model. Unlike traditional models, this does not require training on your specific data; it uses its pre-trained "knowledge" of the English language to categorize items into labels like "Fasteners &amp; Seals" or "Piping &amp; Fittings."</p>
     <h3>3. Cluster Validation</h3>
     <p>The system uses <b>K-Means Clustering</b> to group items that are mathematically similar. It then checks if the "Human Logic" category matches the "Machine Logic" cluster. If they match, the <b>Confidence Score</b> increases.</p>
     <hr>
@@ -1078,6 +1129,6 @@ with page[4]:
     | Frontend | Streamlit |
     | Data Processing | Pandas, NumPy, RegEx |
     | Machine Learning | Scikit-Learn (KMeans, Isolation Forest) |
-    | Deep Learning | Hugging Face Inference API (BART, MiniLM) |
+    | Deep Learning | Gemini API (Gemini 1.5 Flash, text-embedding-004) |
     | Visualizations | Plotly Express &amp; Graph Objects |
     """, unsafe_allow_html=True)
