@@ -6,6 +6,7 @@ import os
 import json
 import socket
 import tomllib
+import time
 from pathlib import Path
 from difflib import SequenceMatcher
 from urllib import request, error
@@ -44,6 +45,7 @@ HF_BATCH_SIZE = 16
 HF_ZERO_SHOT_MODEL = "facebook/bart-large-mnli"
 HF_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 HF_INFERENCE_API_URL = "https://api-inference.huggingface.co/models"
+HF_API_HOSTNAME = "api-inference.huggingface.co"
 HF_INFERENCE_TIMEOUT = 30
 ENABLE_HF_MODELS = resolve_bool_setting("ENABLE_HF_MODELS", default=False)
 HF_CONFIDENCE_MIN_THRESHOLD = 0.8
@@ -51,6 +53,15 @@ HF_CONFIDENCE_MIN_TARGET = 0.6
 HF_CONFIDENCE_MAX_TARGET = 0.98
 HF_CONNECTION_CACHE_TTL = 30
 HF_CONNECTION_TEST_TEXT = "Inventory audit connection check."
+HF_MAX_RETRIES = 2  # Number of retries for transient failures
+HF_RETRY_DELAY = 2  # Base delay between retries in seconds
+HF_MAX_RETRY_DELAY = 10  # Maximum delay cap for exponential backoff
+HF_TOKEN_MIN_LENGTH = 20  # Minimum length for valid HF tokens
+HF_MODEL_LOADING_PATTERNS = [
+    "loading",
+    "is currently loading",
+    "model is loading"
+]  # Patterns indicating model is loading and should be retried
 HF_TOKEN_KEYS = (
     "HF_TOKEN",
     "HUGGINGFACEHUB_API_TOKEN",
@@ -183,34 +194,164 @@ def get_hf_token():
                 return token
     return None
 
-def call_hf_inference(model, payload, token, warning_message, show_warnings=True):
+def validate_hf_token(token):
+    """Validate that the token looks like a valid Hugging Face token."""
+    if not token:
+        return False
+    token = str(token).strip()
+    # HF tokens typically start with 'hf_' and must meet minimum length requirement
+    if not token.startswith('hf_'):
+        return False
+    if len(token) < HF_TOKEN_MIN_LENGTH:
+        return False
+    return True
+
+def check_dns_resolution(hostname):
+    """Check if a hostname can be resolved via DNS."""
+    try:
+        socket.gethostbyname(hostname)
+        return True
+    except (socket.gaierror, socket.herror, OSError):
+        return False
+
+def check_hf_api_connectivity():
+    """
+    Check if Hugging Face API is accessible.
+    Returns a tuple: (is_accessible, error_message)
+    """
+    hostname = HF_API_HOSTNAME
+    
+    # First check DNS resolution
+    if not check_dns_resolution(hostname):
+        return False, "dns_resolution_failed"
+    
+    # Try to establish a connection
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((hostname, 443))
+        return True, None
+    except socket.timeout:
+        return False, "connection_timeout"
+    except (socket.gaierror, socket.herror):
+        return False, "dns_resolution_failed"
+    except ConnectionRefusedError:
+        return False, "connection_refused"
+    except OSError as e:
+        return False, f"network_error: {str(e)}"
+    finally:
+        if sock:
+            try:
+                sock.close()
+            except (OSError, socket.error):
+                # Ignore errors during cleanup
+                pass
+
+def call_hf_inference(model, payload, token, warning_message, show_warnings=True, retry_count=0):
+    """
+    Call Hugging Face Inference API with improved error handling and retry logic.
+    Returns None on failure, result on success.
+    """
     if not token:
         return None
+    
     data = json.dumps(payload).encode("utf-8")
     req = request.Request(
         f"{HF_INFERENCE_API_URL}/{model}",
         data=data,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     )
+    
     try:
         with request.urlopen(req, timeout=HF_INFERENCE_TIMEOUT) as response:
             result = json.loads(response.read().decode("utf-8"))
+        
+        # Check if API returned an error in the response
         if isinstance(result, dict) and result.get("error"):
+            error_msg = result.get('error', 'Unknown error')
+            
+            # Check if model is loading and we should retry
+            is_model_loading = any(pattern in error_msg.lower() for pattern in HF_MODEL_LOADING_PATTERNS)
+            
+            if is_model_loading and retry_count < HF_MAX_RETRIES:
+                # Exponential backoff with maximum delay cap
+                delay = min(HF_RETRY_DELAY * (2 ** retry_count), HF_MAX_RETRY_DELAY)
+                time.sleep(delay)
+                return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
+            
             if show_warnings:
-                st.warning(f"{warning_message} ({result.get('error')})")
+                st.warning(f"{warning_message}: API returned error - {error_msg}")
             return None
+        
         return result
-    except (error.HTTPError, error.URLError, socket.timeout, ValueError) as exc:
-        if isinstance(exc, socket.timeout):
-            detail = "timeout"
-        elif isinstance(exc, error.HTTPError):
-            detail = f"HTTP {exc.code}"
-        elif isinstance(exc, error.URLError):
-            detail = "network error"
-        else:
-            detail = "invalid response"
+        
+    except error.HTTPError as exc:
+        # HTTP errors (4xx, 5xx)
+        detail = f"HTTP {exc.code}"
+        is_retryable = False
+        
+        if exc.code == 401:
+            detail += " - Invalid or expired token"
+        elif exc.code == 403:
+            detail += " - Access forbidden"
+        elif exc.code == 429:
+            detail += " - Rate limit exceeded"
+            is_retryable = True
+        elif exc.code == 503:
+            detail += " - Service temporarily unavailable"
+            is_retryable = True
+        elif exc.code >= 500:
+            detail += " - Server error"
+            is_retryable = True
+        
+        # Retry on transient errors with exponential backoff and cap
+        if is_retryable and retry_count < HF_MAX_RETRIES:
+            delay = min(HF_RETRY_DELAY * (2 ** retry_count), HF_MAX_RETRY_DELAY)
+            time.sleep(delay)
+            return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
+        
         if show_warnings:
-            st.warning(f"{warning_message} ({detail})")
+            st.warning(f"{warning_message}: {detail}")
+        return None
+        
+    except error.URLError as exc:
+        # Network/DNS errors - typically not retryable
+        error_reason = str(exc.reason)
+        
+        if isinstance(exc.reason, socket.gaierror):
+            # DNS resolution failure
+            detail = "DNS resolution failed - Hugging Face API may be blocked by firewall or network"
+        elif isinstance(exc.reason, socket.timeout):
+            detail = "Connection timeout - Network may be slow or API unreachable"
+        elif "Connection refused" in error_reason:
+            detail = "Connection refused - Service may be down"
+        elif "Network is unreachable" in error_reason:
+            detail = "Network unreachable - Check network connectivity"
+        else:
+            detail = f"Network error - {error_reason}"
+        
+        if show_warnings:
+            st.warning(f"{warning_message}: {detail}")
+        return None
+        
+    except socket.timeout:
+        # Explicit timeout - could be transient
+        if retry_count < HF_MAX_RETRIES:
+            delay = min(HF_RETRY_DELAY * (2 ** retry_count), HF_MAX_RETRY_DELAY)
+            time.sleep(delay)
+            return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
+        
+        detail = "Request timeout - API response took too long"
+        if show_warnings:
+            st.warning(f"{warning_message}: {detail}")
+        return None
+        
+    except ValueError as exc:
+        # JSON parsing error
+        detail = "Invalid response format - Could not parse API response"
+        if show_warnings:
+            st.warning(f"{warning_message}: {detail}")
         return None
 
 def run_hf_zero_shot(texts, labels):
@@ -303,11 +444,64 @@ def is_valid_embedding_response(result):
 
 @st.cache_data(ttl=HF_CONNECTION_CACHE_TTL)
 def test_hf_inference_connection(enable_hf_models):
+    """
+    Test connection to Hugging Face Inference API with comprehensive diagnostics.
+    Returns a dict with connection status and detailed error information.
+    """
     if not enable_hf_models:
-        return {"enabled": False, "zero_shot": False, "embeddings": False, "reason": "disabled"}
+        return {
+            "enabled": False,
+            "zero_shot": False,
+            "embeddings": False,
+            "reason": "disabled",
+            "status": "disabled",
+            "error_detail": None
+        }
+    
+    # Check if token exists
     token = get_hf_token()
     if not token:
-        return {"enabled": False, "zero_shot": False, "embeddings": False, "reason": "missing_token"}
+        return {
+            "enabled": False,
+            "zero_shot": False,
+            "embeddings": False,
+            "reason": "missing_token",
+            "status": "missing_token",
+            "error_detail": "No Hugging Face token found in environment or secrets"
+        }
+    
+    # Validate token format
+    if not validate_hf_token(token):
+        return {
+            "enabled": False,
+            "zero_shot": False,
+            "embeddings": False,
+            "reason": "invalid_token",
+            "status": "invalid_token",
+            "error_detail": f"Token format is invalid (should start with 'hf_' and be at least {HF_TOKEN_MIN_LENGTH} characters)"
+        }
+    
+    # Check network connectivity to HF API
+    is_accessible, conn_error = check_hf_api_connectivity()
+    if not is_accessible:
+        error_details = {
+            "dns_resolution_failed": f"Cannot resolve {HF_API_HOSTNAME} - May be blocked by firewall or network policy",
+            "connection_timeout": "Connection timeout - Network may be slow or API unreachable",
+            "connection_refused": "Connection refused - Service may be down or blocked",
+        }
+        error_detail = error_details.get(conn_error, f"Network connectivity issue: {conn_error}")
+        
+        return {
+            "enabled": False,
+            "zero_shot": False,
+            "embeddings": False,
+            "reason": "network_unreachable",
+            "status": "network_unreachable",
+            "error_detail": error_detail,
+            "connectivity_error": conn_error
+        }
+    
+    # Test zero-shot classification model
     test_text = HF_CONNECTION_TEST_TEXT
     zero_shot_payload = {
         "inputs": [test_text],
@@ -317,14 +511,17 @@ def test_hf_inference_connection(enable_hf_models):
         },
         "options": {"wait_for_model": True}
     }
+    
     zero_shot_result = call_hf_inference(
         HF_ZERO_SHOT_MODEL,
         zero_shot_payload,
         token,
-        "Hugging Face connection test failed",
+        "Hugging Face zero-shot classification test failed",
         show_warnings=False
     )
     zero_shot_ok = is_valid_zero_shot_response(zero_shot_result)
+    
+    # Test embedding model
     embedding_payload = {"inputs": [test_text], "options": {"wait_for_model": True}}
     embedding_result = call_hf_inference(
         HF_EMBEDDING_MODEL,
@@ -334,20 +531,33 @@ def test_hf_inference_connection(enable_hf_models):
         show_warnings=False
     )
     embedding_ok = is_valid_embedding_response(embedding_result)
+    
+    # Determine overall status
     if zero_shot_ok and embedding_ok:
         status = "full"
+        error_detail = None
     elif zero_shot_ok or embedding_ok:
         status = "partial"
+        failed_models = []
+        if not zero_shot_ok:
+            failed_models.append("zero-shot classification")
+        if not embedding_ok:
+            failed_models.append("embeddings")
+        error_detail = f"Some models unavailable: {', '.join(failed_models)}"
     else:
         status = "unavailable"
+        error_detail = "Both zero-shot classification and embedding models failed to respond"
+    
     enabled = status in {"full", "partial"}
     reason = None if enabled else "inference_test_failed"
+    
     return {
         "enabled": enabled,
         "zero_shot": zero_shot_ok,
         "embeddings": embedding_ok,
         "reason": reason,
-        "status": status
+        "status": status,
+        "error_detail": error_detail
     }
 
 # --- MAIN ENGINE ---
@@ -442,6 +652,8 @@ group_options = list(PRODUCT_GROUPS.keys())
 # --- HEADER & MODERN NAVIGATION ---
 st.title("🛡️ AI Inventory Auditor Pro")
 st.markdown("### Advanced Inventory Intelligence & Quality Management")
+
+# Display HF connection status with detailed messaging
 if hf_status["enabled"]:
     enabled_features = []
     if hf_status["zero_shot"]:
@@ -452,13 +664,52 @@ if hf_status["enabled"]:
     status_label = hf_status.get("status", "partial")
     if status_label not in {"full", "partial"}:
         status_label = "partial"
-    st.success(f"Hugging Face Inference API connected ({status_label}: {feature_label}).")
+    st.success(f"✅ Hugging Face Inference API connected ({status_label}: {feature_label}).")
+    
+    # Show warning if partial connectivity
+    if status_label == "partial" and hf_status.get("error_detail"):
+        st.info(f"ℹ️ Note: {hf_status['error_detail']}")
+
 elif hf_status["reason"] == "disabled":
-    st.info("Hugging Face models disabled. Set ENABLE_HF_MODELS=true to enable hosted inference.")
+    st.info("ℹ️ **Hugging Face models disabled.** Using local ML models for analysis.\n\n"
+            "To enable hosted inference:\n"
+            "- Set `ENABLE_HF_MODELS=true` in environment or `.streamlit/secrets.toml`\n"
+            "- Provide a token via `HF_TOKEN` environment variable or secrets")
+
 elif hf_status["reason"] == "missing_token":
-    st.warning("Hugging Face token missing; using local signals instead of hosted inference.")
+    st.warning("⚠️ **Hugging Face token missing.** Using local signals instead of hosted inference.\n\n"
+               "To enable hosted models:\n"
+               "- Obtain a token from https://huggingface.co/settings/tokens\n"
+               "- Set via environment variable: `HF_TOKEN=your_token`\n"
+               "- Or add to `.streamlit/secrets.toml`: `HF_TOKEN = \"your_token\"`")
+
+elif hf_status["reason"] == "invalid_token":
+    st.warning("⚠️ **Hugging Face token format is invalid.** Using local signals instead.\n\n"
+               f"Details: {hf_status.get('error_detail', 'Token validation failed')}\n\n"
+               "Valid tokens should:\n"
+               "- Start with 'hf_'\n"
+               f"- Be at least {HF_TOKEN_MIN_LENGTH} characters long\n"
+               "- Obtain from https://huggingface.co/settings/tokens")
+
+elif hf_status["reason"] == "network_unreachable":
+    st.error("🚫 **Cannot reach Hugging Face API.** Using local signals instead.\n\n"
+             f"**Issue:** {hf_status.get('error_detail', 'Network connectivity problem')}\n\n"
+             "**Possible causes:**\n"
+             f"- Corporate firewall blocking {HF_API_HOSTNAME}\n"
+             "- Network policy restrictions\n"
+             "- DNS resolution issues\n"
+             "- Internet connectivity problems\n\n"
+             "**Resolution:**\n"
+             f"- Contact your network administrator to whitelist {HF_API_HOSTNAME}\n"
+             "- Check your network/firewall settings\n"
+             "- Verify internet connectivity")
+
 else:
-    st.warning("Hugging Face Inference API connection test failed; using local signals instead.")
+    # Generic failure
+    error_detail = hf_status.get('error_detail', 'Connection test failed')
+    st.warning(f"⚠️ **Hugging Face Inference API connection test failed.** Using local signals instead.\n\n"
+               f"Details: {error_detail}\n\n"
+               "The application will continue using local ML models for analysis.")
 
 # Modern horizontal tab navigation
 page = st.tabs(["📈 Executive Dashboard", "📍 Categorization Audit", "🚨 Quality Hub (Anomalies/Dups)", "🧠 Technical Methodology", "🧭 My Approach"])
@@ -656,6 +907,63 @@ with page[2]:
 with page[3]:
     st.markdown("#### 🧠 Technical Methodology & AI Stack")
     st.markdown("Understand the advanced algorithms powering this inventory intelligence system.")
+    
+    # Add Connection Diagnostics Section
+    with st.expander("🔍 Hugging Face Connection Diagnostics", expanded=False):
+        st.markdown("### Connection Status")
+        
+        # Display status overview
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if hf_status["enabled"]:
+                st.metric("Status", "✅ Connected", delta=None)
+            else:
+                st.metric("Status", "❌ Disconnected", delta=None)
+        
+        with col2:
+            st.metric("Zero-Shot", "✅ OK" if hf_status["zero_shot"] else "❌ Failed")
+        
+        with col3:
+            st.metric("Embeddings", "✅ OK" if hf_status["embeddings"] else "❌ Failed")
+        
+        st.markdown("---")
+        
+        # Detailed diagnostics
+        st.markdown("### Diagnostic Details")
+        
+        # Token status
+        token = get_hf_token()
+        st.markdown(f"**Token Status:** {'✅ Present' if token else '❌ Missing'}")
+        if token:
+            is_valid = validate_hf_token(token)
+            st.markdown(f"**Token Validation:** {'✅ Valid format' if is_valid else '❌ Invalid format'}")
+        
+        # Network connectivity
+        st.markdown("**Network Tests:**")
+        dns_ok = check_dns_resolution(HF_API_HOSTNAME)
+        st.markdown(f"- DNS Resolution: {'✅ OK' if dns_ok else '❌ Failed'}")
+        
+        is_accessible, conn_error = check_hf_api_connectivity()
+        st.markdown(f"- TCP Connectivity: {'✅ OK' if is_accessible else '❌ Failed'}")
+        if conn_error:
+            st.markdown(f"  - Error: `{conn_error}`")
+        
+        # Overall reason
+        if hf_status.get("reason"):
+            st.markdown(f"**Overall Status:** `{hf_status['reason']}`")
+        
+        if hf_status.get("error_detail"):
+            st.markdown(f"**Error Details:** {hf_status['error_detail']}")
+        
+        # Configuration info
+        st.markdown("---")
+        st.markdown("### Configuration")
+        st.markdown(f"**ENABLE_HF_MODELS:** `{ENABLE_HF_MODELS}`")
+        st.markdown(f"**HF_INFERENCE_API_URL:** `{HF_INFERENCE_API_URL}`")
+        st.markdown(f"**HF_INFERENCE_TIMEOUT:** `{HF_INFERENCE_TIMEOUT}s`")
+        st.markdown(f"**Models:**")
+        st.markdown(f"- Zero-Shot: `{HF_ZERO_SHOT_MODEL}`")
+        st.markdown(f"- Embeddings: `{HF_EMBEDDING_MODEL}`")
     
     st.markdown("""
     ### 1. Data Processing (ETL)
