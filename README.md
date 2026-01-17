@@ -33,17 +33,27 @@ The app includes comprehensive connection diagnostics:
 
 ### Setup Examples
 
-Example environment setup:
+**Option 1: Environment Variables**
 ```bash
 export ENABLE_HF_MODELS=true
 export HF_TOKEN="your_hf_token"
 ```
 
-Or add the settings to `.streamlit/secrets.toml`:
+**Option 2: Streamlit Secrets File**
+
+Copy the example secrets file and fill in your values:
+```bash
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+# Edit .streamlit/secrets.toml with your actual token
+```
+
+Example `.streamlit/secrets.toml`:
 ```toml
 ENABLE_HF_MODELS = true
-HF_TOKEN = "your_hf_token"
+HF_TOKEN = "hf_your_actual_token_here"
 ```
+
+**⚠️ Security Note**: Never commit `.streamlit/secrets.toml` to version control! This file is already in `.gitignore`.
 
 ### Fallback Behavior
 

@@ -5,7 +5,11 @@ import re
 import os
 import json
 import socket
-import tomllib
+try:
+    import tomllib
+except ImportError:
+    # Fallback for Python < 3.11
+    import tomli as tomllib
 import time
 from pathlib import Path
 from difflib import SequenceMatcher
@@ -22,13 +26,60 @@ import plotly.graph_objects as go
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="AI Inventory Auditor Pro", layout="wide", page_icon="🛡️")
 
+def get_streamlit_secrets():
+    """
+    Load secrets from .streamlit/secrets.toml file.
+    
+    Returns:
+        dict: Dictionary of secrets from the TOML file. Returns empty dict if file
+              doesn't exist or cannot be parsed.
+    
+    Note:
+        This function safely handles missing files and parse errors by returning
+        an empty dictionary rather than raising exceptions.
+    """
+    secrets_path = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
+    if not secrets_path.exists():
+        return {}
+    try:
+        with secrets_path.open("rb") as handle:
+            return tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
 def resolve_bool_setting(key, default=False):
+    """
+    Resolve a boolean setting from environment variables or secrets.
+    
+    Checks in order:
+    1. Environment variable
+    2. File-based secrets (.streamlit/secrets.toml)
+    3. Streamlit secrets (st.secrets)
+    4. Default value
+    
+    Args:
+        key: The setting key to look up
+        default: Default value if key is not found (default: False)
+    
+    Returns:
+        bool: The resolved boolean value
+    
+    Note:
+        String values are converted to boolean by checking if they equal "true"
+        (case-insensitive after stripping whitespace).
+    """
     value = os.getenv(key)
     if value is None:
-        try:
-            value = st.secrets.get(key)
-        except (AttributeError, KeyError):
-            value = None
+        # Try file-based secrets first (more reliable)
+        secrets = get_streamlit_secrets()
+        if key in secrets:
+            value = secrets[key]
+        else:
+            # Fall back to st.secrets as last resort
+            try:
+                value = st.secrets.get(key)
+            except (AttributeError, KeyError):
+                value = None
     if value is None:
         return default
     if isinstance(value, bool):
@@ -165,16 +216,6 @@ def build_fuzzy_duplicates(df, id_col):
                     'Match %': f"{sim:.1%}", 'Verdict': "🛠️ Variant" if is_variant else "🚨 Duplicate"
                 })
     return fuzzy_list
-
-def get_streamlit_secrets():
-    secrets_path = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
-    if not secrets_path.exists():
-        return {}
-    try:
-        with secrets_path.open("rb") as handle:
-            return tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}
 
 def get_hf_secret(key):
     secrets = get_streamlit_secrets()

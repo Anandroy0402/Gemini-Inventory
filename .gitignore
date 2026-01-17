@@ -21,7 +21,8 @@ ENV/
 Thumbs.db
 
 # Streamlit
-.streamlit/
+.streamlit/*
+!.streamlit/secrets.toml.example
 
 # Logs
 *.log
