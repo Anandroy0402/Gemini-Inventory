@@ -54,7 +54,14 @@ HF_CONFIDENCE_MAX_TARGET = 0.98
 HF_CONNECTION_CACHE_TTL = 30
 HF_CONNECTION_TEST_TEXT = "Inventory audit connection check."
 HF_MAX_RETRIES = 2  # Number of retries for transient failures
-HF_RETRY_DELAY = 2  # Delay between retries in seconds
+HF_RETRY_DELAY = 2  # Base delay between retries in seconds
+HF_MAX_RETRY_DELAY = 10  # Maximum delay cap for exponential backoff
+HF_TOKEN_MIN_LENGTH = 20  # Minimum length for valid HF tokens
+HF_MODEL_LOADING_PATTERNS = [
+    "loading",
+    "is currently loading",
+    "model is loading"
+]  # Patterns indicating model is loading and should be retried
 HF_TOKEN_KEYS = (
     "HF_TOKEN",
     "HUGGINGFACEHUB_API_TOKEN",
@@ -192,10 +199,10 @@ def validate_hf_token(token):
     if not token:
         return False
     token = str(token).strip()
-    # HF tokens typically start with 'hf_' and are at least 20 characters
+    # HF tokens typically start with 'hf_' and must meet minimum length requirement
     if not token.startswith('hf_'):
         return False
-    if len(token) < 20:
+    if len(token) < HF_TOKEN_MIN_LENGTH:
         return False
     return True
 
@@ -237,7 +244,8 @@ def check_hf_api_connectivity():
         if sock:
             try:
                 sock.close()
-            except:
+            except (OSError, socket.error):
+                # Ignore errors during cleanup
                 pass
 
 def call_hf_inference(model, payload, token, warning_message, show_warnings=True, retry_count=0):
@@ -264,12 +272,12 @@ def call_hf_inference(model, payload, token, warning_message, show_warnings=True
             error_msg = result.get('error', 'Unknown error')
             
             # Check if model is loading and we should retry
-            # Common patterns: "loading", "is currently loading", "Model ... is currently loading"
-            retryable_patterns = ["loading", "is currently loading", "model is loading"]
-            is_model_loading = any(pattern in error_msg.lower() for pattern in retryable_patterns)
+            is_model_loading = any(pattern in error_msg.lower() for pattern in HF_MODEL_LOADING_PATTERNS)
             
             if is_model_loading and retry_count < HF_MAX_RETRIES:
-                time.sleep(HF_RETRY_DELAY * (2 ** retry_count))  # Exponential backoff
+                # Exponential backoff with maximum delay cap
+                delay = min(HF_RETRY_DELAY * (2 ** retry_count), HF_MAX_RETRY_DELAY)
+                time.sleep(delay)
                 return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
             
             if show_warnings:
@@ -297,9 +305,10 @@ def call_hf_inference(model, payload, token, warning_message, show_warnings=True
             detail += " - Server error"
             is_retryable = True
         
-        # Retry on transient errors with exponential backoff
+        # Retry on transient errors with exponential backoff and cap
         if is_retryable and retry_count < HF_MAX_RETRIES:
-            time.sleep(HF_RETRY_DELAY * (2 ** retry_count))  # Exponential backoff: 2s, 4s, 8s...
+            delay = min(HF_RETRY_DELAY * (2 ** retry_count), HF_MAX_RETRY_DELAY)
+            time.sleep(delay)
             return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
         
         if show_warnings:
@@ -329,7 +338,8 @@ def call_hf_inference(model, payload, token, warning_message, show_warnings=True
     except socket.timeout:
         # Explicit timeout - could be transient
         if retry_count < HF_MAX_RETRIES:
-            time.sleep(HF_RETRY_DELAY * (2 ** retry_count))  # Exponential backoff
+            delay = min(HF_RETRY_DELAY * (2 ** retry_count), HF_MAX_RETRY_DELAY)
+            time.sleep(delay)
             return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
         
         detail = "Request timeout - API response took too long"
@@ -468,7 +478,7 @@ def test_hf_inference_connection(enable_hf_models):
             "embeddings": False,
             "reason": "invalid_token",
             "status": "invalid_token",
-            "error_detail": "Token format is invalid (should start with 'hf_' and be at least 20 characters)"
+            "error_detail": f"Token format is invalid (should start with 'hf_' and be at least {HF_TOKEN_MIN_LENGTH} characters)"
         }
     
     # Check network connectivity to HF API
@@ -678,7 +688,7 @@ elif hf_status["reason"] == "invalid_token":
                f"Details: {hf_status.get('error_detail', 'Token validation failed')}\n\n"
                "Valid tokens should:\n"
                "- Start with 'hf_'\n"
-               "- Be at least 20 characters long\n"
+               f"- Be at least {HF_TOKEN_MIN_LENGTH} characters long\n"
                "- Obtain from https://huggingface.co/settings/tokens")
 
 elif hf_status["reason"] == "network_unreachable":
