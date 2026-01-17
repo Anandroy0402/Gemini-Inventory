@@ -45,6 +45,7 @@ HF_BATCH_SIZE = 16
 HF_ZERO_SHOT_MODEL = "facebook/bart-large-mnli"
 HF_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 HF_INFERENCE_API_URL = "https://api-inference.huggingface.co/models"
+HF_API_HOSTNAME = "api-inference.huggingface.co"
 HF_INFERENCE_TIMEOUT = 30
 ENABLE_HF_MODELS = resolve_bool_setting("ENABLE_HF_MODELS", default=False)
 HF_CONFIDENCE_MIN_THRESHOLD = 0.8
@@ -211,18 +212,18 @@ def check_hf_api_connectivity():
     Check if Hugging Face API is accessible.
     Returns a tuple: (is_accessible, error_message)
     """
-    hostname = "api-inference.huggingface.co"
+    hostname = HF_API_HOSTNAME
     
     # First check DNS resolution
     if not check_dns_resolution(hostname):
         return False, "dns_resolution_failed"
     
     # Try to establish a connection
+    sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5)
         sock.connect((hostname, 443))
-        sock.close()
         return True, None
     except socket.timeout:
         return False, "connection_timeout"
@@ -232,8 +233,12 @@ def check_hf_api_connectivity():
         return False, "connection_refused"
     except OSError as e:
         return False, f"network_error: {str(e)}"
-    except Exception as e:
-        return False, f"unknown_error: {str(e)}"
+    finally:
+        if sock:
+            try:
+                sock.close()
+            except:
+                pass
 
 def call_hf_inference(model, payload, token, warning_message, show_warnings=True, retry_count=0):
     """
@@ -259,8 +264,12 @@ def call_hf_inference(model, payload, token, warning_message, show_warnings=True
             error_msg = result.get('error', 'Unknown error')
             
             # Check if model is loading and we should retry
-            if "loading" in error_msg.lower() and retry_count < HF_MAX_RETRIES:
-                time.sleep(HF_RETRY_DELAY)
+            # Common patterns: "loading", "is currently loading", "Model ... is currently loading"
+            retryable_patterns = ["loading", "is currently loading", "model is loading"]
+            is_model_loading = any(pattern in error_msg.lower() for pattern in retryable_patterns)
+            
+            if is_model_loading and retry_count < HF_MAX_RETRIES:
+                time.sleep(HF_RETRY_DELAY * (2 ** retry_count))  # Exponential backoff
                 return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
             
             if show_warnings:
@@ -288,9 +297,9 @@ def call_hf_inference(model, payload, token, warning_message, show_warnings=True
             detail += " - Server error"
             is_retryable = True
         
-        # Retry on transient errors
+        # Retry on transient errors with exponential backoff
         if is_retryable and retry_count < HF_MAX_RETRIES:
-            time.sleep(HF_RETRY_DELAY * (retry_count + 1))  # Exponential backoff
+            time.sleep(HF_RETRY_DELAY * (2 ** retry_count))  # Exponential backoff: 2s, 4s, 8s...
             return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
         
         if show_warnings:
@@ -320,7 +329,7 @@ def call_hf_inference(model, payload, token, warning_message, show_warnings=True
     except socket.timeout:
         # Explicit timeout - could be transient
         if retry_count < HF_MAX_RETRIES:
-            time.sleep(HF_RETRY_DELAY)
+            time.sleep(HF_RETRY_DELAY * (2 ** retry_count))  # Exponential backoff
             return call_hf_inference(model, payload, token, warning_message, show_warnings, retry_count + 1)
         
         detail = "Request timeout - API response took too long"
@@ -331,13 +340,6 @@ def call_hf_inference(model, payload, token, warning_message, show_warnings=True
     except ValueError as exc:
         # JSON parsing error
         detail = "Invalid response format - Could not parse API response"
-        if show_warnings:
-            st.warning(f"{warning_message}: {detail}")
-        return None
-        
-    except Exception as exc:
-        # Catch-all for unexpected errors
-        detail = f"Unexpected error - {type(exc).__name__}: {str(exc)}"
         if show_warnings:
             st.warning(f"{warning_message}: {detail}")
         return None
@@ -473,7 +475,7 @@ def test_hf_inference_connection(enable_hf_models):
     is_accessible, conn_error = check_hf_api_connectivity()
     if not is_accessible:
         error_details = {
-            "dns_resolution_failed": "Cannot resolve api-inference.huggingface.co - May be blocked by firewall or network policy",
+            "dns_resolution_failed": f"Cannot resolve {HF_API_HOSTNAME} - May be blocked by firewall or network policy",
             "connection_timeout": "Connection timeout - Network may be slow or API unreachable",
             "connection_refused": "Connection refused - Service may be down or blocked",
         }
@@ -683,12 +685,12 @@ elif hf_status["reason"] == "network_unreachable":
     st.error("🚫 **Cannot reach Hugging Face API.** Using local signals instead.\n\n"
              f"**Issue:** {hf_status.get('error_detail', 'Network connectivity problem')}\n\n"
              "**Possible causes:**\n"
-             "- Corporate firewall blocking api-inference.huggingface.co\n"
+             f"- Corporate firewall blocking {HF_API_HOSTNAME}\n"
              "- Network policy restrictions\n"
              "- DNS resolution issues\n"
              "- Internet connectivity problems\n\n"
              "**Resolution:**\n"
-             "- Contact your network administrator to whitelist api-inference.huggingface.co\n"
+             f"- Contact your network administrator to whitelist {HF_API_HOSTNAME}\n"
              "- Check your network/firewall settings\n"
              "- Verify internet connectivity")
 
@@ -928,7 +930,7 @@ with page[3]:
         
         # Network connectivity
         st.markdown("**Network Tests:**")
-        dns_ok = check_dns_resolution("api-inference.huggingface.co")
+        dns_ok = check_dns_resolution(HF_API_HOSTNAME)
         st.markdown(f"- DNS Resolution: {'✅ OK' if dns_ok else '❌ Failed'}")
         
         is_accessible, conn_error = check_hf_api_connectivity()
