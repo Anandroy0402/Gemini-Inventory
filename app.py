@@ -25,10 +25,23 @@ st.set_page_config(page_title="AI Inventory Auditor Pro", layout="wide", page_ic
 def resolve_bool_setting(key, default=False):
     value = os.getenv(key)
     if value is None:
-        try:
-            value = st.secrets.get(key)
-        except (AttributeError, KeyError):
-            value = None
+        # Try file-based secrets first (more reliable)
+        secrets_path = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
+        if secrets_path.exists():
+            try:
+                with secrets_path.open("rb") as handle:
+                    secrets = tomllib.load(handle)
+                    if key in secrets:
+                        value = secrets[key]
+            except (OSError, tomllib.TOMLDecodeError):
+                pass
+        
+        # Fall back to st.secrets as last resort
+        if value is None:
+            try:
+                value = st.secrets.get(key)
+            except (AttributeError, KeyError):
+                value = None
     if value is None:
         return default
     if isinstance(value, bool):
