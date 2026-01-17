@@ -163,12 +163,11 @@ def normalize_token(value):
     return token or None
 
 def get_hf_token():
-    token_keys = list(HF_TOKEN_KEYS) + [key.lower() for key in HF_TOKEN_KEYS]
-    for key in token_keys:
+    for key in HF_TOKEN_KEYS:
         token = normalize_token(os.getenv(key))
         if token:
             return token
-    for key in token_keys:
+    for key in HF_TOKEN_KEYS:
         token = normalize_token(get_hf_secret(key))
         if token:
             return token
