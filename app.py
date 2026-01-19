@@ -6,25 +6,12 @@ import os
 import json
 import socket
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
-try:
-    import tomllib
-except ImportError:
-    # Fallback for Python < 3.11
-    import tomli as tomllib
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from difflib import SequenceMatcher
 from urllib import request, error
-try:
-    from streamlit.errors import StreamlitSecretNotFoundError
-except ImportError:
-    class StreamlitSecretNotFoundError(RuntimeError):
-        """Fallback when Streamlit secret errors are unavailable."""
+from dotenv import load_dotenv
 
 # Advanced AI/ML Imports
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -37,70 +24,53 @@ import plotly.graph_objects as go
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="AI Inventory Auditor Pro", layout="wide", page_icon="🛡️")
 
-def get_streamlit_secrets():
+# Load environment variables from .env file
+load_dotenv()
+
+# --- FIXED SECRETS MANAGEMENT ---
+# Replaced fragile file reading with robust native Streamlit secrets
+
+def get_config_value(key):
     """
-    Load secrets from .streamlit/secrets.toml file.
-    
-    Returns:
-        dict: Dictionary of secrets from the TOML file. Returns empty dict if file
-              doesn't exist or cannot be parsed.
-    
-    Note:
-        This function safely handles missing files and parse errors by returning
-        an empty dictionary rather than raising exceptions.
+    Unified configuration loader.
+    Checks in order:
+    1. OS Environment Variables (Docker/Cloud)
+    2. Streamlit Secrets (Native .streamlit/secrets.toml)
     """
-    secrets_path = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
-    if not secrets_path.exists():
-        return {}
+    # 1. Check OS Environment
+    val = os.getenv(key)
+    if val is not None:
+        return val
+        
+    # 2. Check Streamlit Secrets
     try:
-        with secrets_path.open("rb") as handle:
-            return tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}
+        # Check root level
+        if key in st.secrets:
+            return st.secrets[key]
+        # Check nested sections (e.g. if you have [gcp] section)
+        for section in st.secrets:
+            if isinstance(st.secrets[section], dict) and key in st.secrets[section]:
+                return st.secrets[section][key]
+    except (FileNotFoundError, AttributeError):
+        pass
+        
+    return None
 
 def resolve_bool_setting(key, default=False):
     """
     Resolve a boolean setting from environment variables or secrets.
-    
-    Checks in order:
-    1. Environment variable
-    2. File-based secrets (.streamlit/secrets.toml)
-    3. Streamlit secrets (st.secrets)
-    4. Default value
-    
-    Args:
-        key: The setting key to look up
-        default: Default value if key is not found (default: False)
-    
-    Returns:
-        bool: The resolved boolean value
-    
-    Note:
-        String values are converted to boolean by checking if they equal "true"
-        (case-insensitive after stripping whitespace).
     """
-    value = os.getenv(key)
-    if value is None:
-        # Try file-based secrets first (more reliable)
-        secrets = get_streamlit_secrets()
-        if key in secrets:
-            value = secrets[key]
-        else:
-            # Fall back to st.secrets as last resort
-            try:
-                value = st.secrets.get(key)
-            except (AttributeError, KeyError):
-                value = None
+    value = get_config_value(key)
     if value is None:
         return default
     if isinstance(value, bool):
         return value
-    return str(value).strip().lower() == "true"
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
 
 # --- KNOWLEDGE BASE: DOMAIN LOGIC ---
 DEFAULT_PRODUCT_GROUP = "Consumables & General"
-MIN_DISTANCE_THRESHOLD = 1e-8  # Replace zero distances to avoid divide-by-zero in confidence calculations.
-COMPARISON_WINDOW_SIZE = 50  # Windowed comparisons keep duplicate checks lightweight.
+MIN_DISTANCE_THRESHOLD = 1e-8  
+COMPARISON_WINDOW_SIZE = 50 
 FUZZY_SIMILARITY_THRESHOLD = 0.85
 SEMANTIC_SIMILARITY_THRESHOLD = 0.9
 GEMINI_BATCH_SIZE = 16
@@ -115,19 +85,15 @@ GEMINI_CONFIDENCE_MIN_TARGET = 0.6
 GEMINI_CONFIDENCE_MAX_TARGET = 0.98
 GEMINI_CONNECTION_CACHE_TTL = 30
 GEMINI_CONNECTION_TEST_TEXT = "Inventory audit connection check."
-GEMINI_MAX_RETRIES = 2  # Number of retries for transient failures
-GEMINI_RETRY_DELAY = 2  # Base delay between retries in seconds
-GEMINI_MAX_RETRY_DELAY = 10  # Maximum delay cap for exponential backoff
-GEMINI_API_KEY_MIN_LENGTH = 20  # Minimum length for valid Gemini API keys
+GEMINI_MAX_RETRIES = 2 
+GEMINI_RETRY_DELAY = 2 
+GEMINI_MAX_RETRY_DELAY = 10 
+GEMINI_API_KEY_MIN_LENGTH = 20 
 GEMINI_MAX_WORKERS = 2
-GEMINI_REQUEST_DELAY = 0.1  # Throttle concurrent calls to avoid API rate limits.
-GEMINI_LABEL_SIMILARITY_THRESHOLD = 0.8  # Similarity floor for choosing closest label match.
+GEMINI_REQUEST_DELAY = 0.1 
+GEMINI_LABEL_SIMILARITY_THRESHOLD = 0.8 
 GEMINI_API_KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 GEMINI_REQUEST_SEMAPHORE = threading.Semaphore(GEMINI_MAX_WORKERS)
-GEMINI_API_KEY_KEYS = (
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY"
-)
 
 PRODUCT_GROUPS = {
     "Piping & Fittings": ["FLANGE", "PIPE", "ELBOW", "TEE", "UNION", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
@@ -226,26 +192,16 @@ def build_fuzzy_duplicates(df, id_col):
                 })
     return fuzzy_list
 
-def get_gemini_secret(key):
-    secrets = get_streamlit_secrets()
-    if key in secrets:
-        return secrets[key]
-    try:
-        return st.secrets[key]
-    except (AttributeError, KeyError, StreamlitSecretNotFoundError):
-        return None
-
 def get_gemini_api_key():
-    for key in GEMINI_API_KEY_KEYS:
-        api_key = os.getenv(key) or get_gemini_secret(key)
-        if api_key:
-            api_key = str(api_key).strip()
-            if api_key:
-                return api_key
+    """Retrieves API key from unified config loader"""
+    keys_to_check = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+    for key in keys_to_check:
+        val = get_config_value(key)
+        if val:
+            return str(val).strip()
     return None
 
 def validate_gemini_api_key(api_key):
-    """Validate that the API key looks like a valid Gemini API key."""
     if not api_key:
         return False
     api_key = str(api_key).strip()
@@ -256,7 +212,6 @@ def validate_gemini_api_key(api_key):
     return bool(GEMINI_API_KEY_PATTERN.search(api_key))
 
 def check_dns_resolution(hostname):
-    """Check if a hostname can be resolved via DNS."""
     try:
         socket.gethostbyname(hostname)
         return True
@@ -264,17 +219,9 @@ def check_dns_resolution(hostname):
         return False
 
 def check_gemini_api_connectivity():
-    """
-    Check if Gemini API is accessible.
-    Returns a tuple: (is_accessible, error_message)
-    """
     hostname = GEMINI_API_HOSTNAME
-    
-    # First check DNS resolution
     if not check_dns_resolution(hostname):
         return False, "dns_resolution_failed"
-    
-    # Try to establish a connection
     sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -293,15 +240,10 @@ def check_gemini_api_connectivity():
         if sock:
             try:
                 sock.close()
-            except (OSError, socket.error):
-                # Ignore errors during cleanup
+            except Exception:
                 pass
 
 def call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings=True, retry_count=0):
-    """
-    Call Gemini API with improved error handling and retry logic.
-    Returns None on failure, result on success.
-    """
     if not api_key:
         return None
     api_key = str(api_key).strip()
@@ -320,134 +262,57 @@ def call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings=T
     try:
         with request.urlopen(req, timeout=GEMINI_API_TIMEOUT) as response:
             result = json.loads(response.read().decode("utf-8"))
-        
-        # Check if API returned an error in the response
         if isinstance(result, dict) and result.get("error"):
-            error_info = result.get("error", {})
-            error_msg = error_info.get("message", "Unknown error")
-            
             if show_warnings:
-                st.warning(f"{warning_message}: API returned error - {error_msg}")
+                st.warning(f"{warning_message}: API returned error - {result['error'].get('message', 'Unknown')}")
             return None
-        
         return result
         
     except error.HTTPError as exc:
-        # HTTP errors (4xx, 5xx)
-        detail = f"HTTP {exc.code}"
         is_retryable = exc.code in {429, 500, 502, 503}
-        
-        if exc.code == 401:
-            detail += " - Invalid or expired API key"
-        elif exc.code == 403:
-            detail += " - Access forbidden"
-        elif exc.code == 429:
-            detail += " - Rate limit exceeded"
-        elif exc.code == 503:
-            detail += " - Service temporarily unavailable"
-        elif exc.code >= 500:
-            detail += " - Server error"
-        
-        # Retry on transient errors with exponential backoff and cap
         if is_retryable and retry_count < GEMINI_MAX_RETRIES:
             delay = min(GEMINI_RETRY_DELAY * (2 ** retry_count), GEMINI_MAX_RETRY_DELAY)
             time.sleep(delay)
             return call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings, retry_count + 1)
-        
         if show_warnings:
-            st.warning(f"{warning_message}: {detail}")
+            st.warning(f"{warning_message}: HTTP {exc.code} - {exc.reason}")
         return None
         
-    except error.URLError as exc:
-        # Network/DNS errors - typically not retryable
-        error_reason = str(exc.reason)
-        
-        if isinstance(exc.reason, socket.gaierror):
-            # DNS resolution failure
-            detail = "DNS resolution failed - Gemini API may be blocked by firewall or network"
-        elif isinstance(exc.reason, socket.timeout):
-            detail = "Connection timeout - Network may be slow or API unreachable"
-        elif "Connection refused" in error_reason:
-            detail = "Connection refused - Service may be down"
-        elif "Network is unreachable" in error_reason:
-            detail = "Network unreachable - Check network connectivity"
-        else:
-            detail = f"Network error - {error_reason}"
-        
+    except (error.URLError, socket.timeout) as exc:
+        if isinstance(exc, socket.timeout) and retry_count < GEMINI_MAX_RETRIES:
+             delay = min(GEMINI_RETRY_DELAY * (2 ** retry_count), GEMINI_MAX_RETRY_DELAY)
+             time.sleep(delay)
+             return call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings, retry_count + 1)
         if show_warnings:
-            st.warning(f"{warning_message}: {detail}")
+            st.warning(f"{warning_message}: Network Error - {str(exc)}")
         return None
-        
-    except socket.timeout:
-        # Explicit timeout - could be transient
-        if retry_count < GEMINI_MAX_RETRIES:
-            delay = min(GEMINI_RETRY_DELAY * (2 ** retry_count), GEMINI_MAX_RETRY_DELAY)
-            time.sleep(delay)
-            return call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings, retry_count + 1)
-        
-        detail = "Request timeout - API response took too long"
-        if show_warnings:
-            st.warning(f"{warning_message}: {detail}")
-        return None
-        
     except ValueError as exc:
-        # JSON parsing error
-        detail = f"Invalid response format - {exc}"
         if show_warnings:
-            st.warning(f"{warning_message}: {detail}")
+            st.warning(f"{warning_message}: Invalid JSON response - {exc}")
         return None
 
 def extract_json_from_text(text):
-    if not text:
-        return None
-    cleaned = text.strip()
-    cleaned = re.sub(r"```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+    if not text: return None
+    cleaned = re.sub(r"```(?:json)?", "", text.strip(), flags=re.IGNORECASE).strip()
     try:
         start = cleaned.index("{")
-    except ValueError:
+        end = cleaned.rindex("}") + 1
+        return json.loads(cleaned[start:end])
+    except (ValueError, json.JSONDecodeError):
         return None
-    depth = 0
-    in_string = False
-    escape = False
-    for idx in range(start, len(cleaned)):
-        char = cleaned[idx]
-        if in_string:
-            if escape:
-                escape = False
-            elif char == "\\":
-                escape = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-            continue
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                snippet = cleaned[start:idx + 1]
-                try:
-                    return json.loads(snippet)
-                except json.JSONDecodeError:
-                    return None
-    return None
 
 def normalize_gemini_label(label, labels):
-    if not label:
-        return None
+    if not label: return None
     label_text = str(label).strip().lower()
-    lowered_labels = [(candidate, candidate.lower()) for candidate in labels]
+    lowered_labels = [(c, c.lower()) for c in labels]
     best_match = None
-    best_similarity = 0.0
-    for candidate, candidate_text in lowered_labels:
-        if label_text == candidate_text:
-            return candidate
-        similarity = SequenceMatcher(None, label_text, candidate_text).ratio()
-        if similarity >= GEMINI_LABEL_SIMILARITY_THRESHOLD and similarity > best_similarity:
-            best_similarity = similarity
-            best_match = candidate
+    best_sim = 0.0
+    for cand, cand_text in lowered_labels:
+        if label_text == cand_text: return cand
+        sim = SequenceMatcher(None, label_text, cand_text).ratio()
+        if sim >= GEMINI_LABEL_SIMILARITY_THRESHOLD and sim > best_sim:
+            best_sim = sim
+            best_match = cand
     return best_match
 
 def parse_gemini_classification_response(response_text, labels):
@@ -461,55 +326,34 @@ def parse_gemini_classification_response(response_text, labels):
         label = response_text.strip()
     
     label = normalize_gemini_label(label, labels)
-    if not label:
-        return None
-    
+    if not label: return None
     try:
         confidence = float(confidence)
     except (TypeError, ValueError):
         confidence = 0.0
-    confidence = max(0.0, min(confidence, 1.0))
-    return {"labels": [label], "scores": [confidence]}
+    return {"labels": [label], "scores": [max(0.0, min(confidence, 1.0))]}
 
 def call_gemini_generate(prompt, api_key, warning_message, show_warnings=True):
     payload = {
-        "contents": [
-            {"parts": [{"text": prompt}]}
-        ],
-        "generationConfig": {
-            "temperature": 0.0,
-            "maxOutputTokens": 128
-        }
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 128}
     }
-    result = call_gemini_api(
-        f"models/{GEMINI_CLASSIFICATION_MODEL}:generateContent",
-        payload,
-        api_key,
-        warning_message,
-        show_warnings=show_warnings
-    )
-    if not result:
+    result = call_gemini_api(f"models/{GEMINI_CLASSIFICATION_MODEL}:generateContent", payload, api_key, warning_message, show_warnings)
+    if not result: return None
+    try:
+        parts = result["candidates"][0]["content"]["parts"]
+        return "".join(p.get("text", "") for p in parts).strip()
+    except (KeyError, IndexError):
         return None
-    candidates = result.get("candidates") or []
-    if not candidates:
-        return None
-    parts = candidates[0].get("content", {}).get("parts") or []
-    text = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
-    return text.strip() if text else None
 
 def call_gemini_embedding(text, api_key, warning_message, show_warnings=True):
     payload = {"content": {"parts": [{"text": text}]}}
-    result = call_gemini_api(
-        f"models/{GEMINI_EMBEDDING_MODEL}:embedContent",
-        payload,
-        api_key,
-        warning_message,
-        show_warnings=show_warnings
-    )
-    if not result:
+    result = call_gemini_api(f"models/{GEMINI_EMBEDDING_MODEL}:embedContent", payload, api_key, warning_message, show_warnings)
+    if not result: return None
+    try:
+        return result["embedding"]["values"]
+    except (KeyError, IndexError):
         return None
-    embedding = result.get("embedding", {}).get("values")
-    return embedding
 
 def build_gemini_prompt(text, labels):
     labels_text = ", ".join(labels)
@@ -526,34 +370,26 @@ def run_gemini_classification(texts, labels):
     if not api_key:
         st.warning("Gemini API key missing; skipping hosted classification.")
         return None
-    if isinstance(texts, str):
-        texts = [texts]
-    if not texts:
-        return None
+    if isinstance(texts, str): texts = [texts]
+    if not texts: return None
+    
     max_workers = min(GEMINI_MAX_WORKERS, GEMINI_BATCH_SIZE, len(texts))
     def classify_text(text):
         prompt = build_gemini_prompt(text, labels)
         with GEMINI_REQUEST_SEMAPHORE:
             time.sleep(GEMINI_REQUEST_DELAY)
-            response_text = call_gemini_generate(
-                prompt,
-                api_key,
-                "Gemini classification failed; using existing categories.",
-                show_warnings=False
-            )
-        return parse_gemini_classification_response(response_text, labels)
+            resp = call_gemini_generate(prompt, api_key, "Gemini classification failed", show_warnings=False)
+        return parse_gemini_classification_response(resp, labels)
+        
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             results = list(executor.map(classify_text, texts))
-        if any(result is None for result in results):
+        if any(r is None for r in results):
             st.warning("Gemini classification failed; using existing categories.")
             return None
         return results
-    except (RuntimeError, ValueError) as exc:
-        st.warning(f"Gemini classification failed; using existing categories. ({exc})")
-        return None
     except Exception as exc:
-        st.warning(f"Gemini classification failed; using existing categories. ({exc})")
+        st.warning(f"Gemini classification failed: {exc}")
         return None
 
 def compute_embeddings(texts):
@@ -561,57 +397,27 @@ def compute_embeddings(texts):
     if not api_key:
         st.warning("Gemini API key missing; skipping hosted embeddings.")
         return None
-    if not texts:
-        return None
+    if not texts: return None
+    
     max_workers = min(GEMINI_MAX_WORKERS, GEMINI_BATCH_SIZE, len(texts))
     def embed_text(text):
         with GEMINI_REQUEST_SEMAPHORE:
             time.sleep(GEMINI_REQUEST_DELAY)
-            return call_gemini_embedding(
-                text,
-                api_key,
-                "Embedding generation failed; falling back to TF-IDF signals.",
-                show_warnings=False
-            )
+            return call_gemini_embedding(text, api_key, "Embedding generation failed", show_warnings=False)
+            
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             embeddings = list(executor.map(embed_text, texts))
-        if any(embedding is None for embedding in embeddings):
+        if any(e is None for e in embeddings):
             st.warning("Embedding generation failed; falling back to TF-IDF signals.")
             return None
         embeddings = np.array(embeddings, dtype=float)
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms[norms == 0] = 1
         return embeddings / norms
-    except (RuntimeError, ValueError) as exc:
-        st.warning(f"Embedding generation failed; falling back to TF-IDF signals. ({exc})")
-        return None
     except Exception as exc:
-        st.warning(f"Embedding generation failed; falling back to TF-IDF signals. ({exc})")
+        st.warning(f"Embedding generation failed: {exc}")
         return None
-
-def is_valid_classification_item(item):
-    if not isinstance(item, dict):
-        return False
-    labels = item.get("labels")
-    scores = item.get("scores")
-    return isinstance(labels, list) and isinstance(scores, list) and bool(labels) and bool(scores)
-
-def is_valid_classification_response(result):
-    if isinstance(result, dict):
-        return is_valid_classification_item(result)
-    if isinstance(result, list) and result:
-        return all(is_valid_classification_item(item) for item in result)
-    return False
-
-def is_valid_embedding_response(result):
-    if not isinstance(result, list) or not result:
-        return False
-    if all(isinstance(x, (int, float)) for x in result):
-        return True
-    if isinstance(result[0], list) and result[0]:
-        return all(isinstance(x, (int, float)) for x in result[0])
-    return False
 
 @st.cache_data(ttl=GEMINI_CONNECTION_CACHE_TTL)
 def test_gemini_inference_connection(enable_gemini_models):
@@ -682,7 +488,7 @@ def test_gemini_inference_connection(enable_gemini_models):
         show_warnings=False
     )
     classification_result = parse_gemini_classification_response(classification_text, list(PRODUCT_GROUPS.keys()))
-    classification_ok = is_valid_classification_response(classification_result)
+    classification_ok = (classification_result is not None) and (isinstance(classification_result.get('labels'), list))
     
     # Test embedding model
     embedding_result = call_gemini_embedding(
@@ -691,7 +497,7 @@ def test_gemini_inference_connection(enable_gemini_models):
         "Gemini embedding test failed",
         show_warnings=False
     )
-    embedding_ok = is_valid_embedding_response(embedding_result)
+    embedding_ok = isinstance(embedding_result, list) and len(embedding_result) > 0
     
     # Determine overall status
     if classification_ok and embedding_ok:
