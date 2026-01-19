@@ -24,5 +24,37 @@ Thumbs.db
 .streamlit/*
 !.streamlit/secrets.toml.example
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/*
+!.streamlit/secrets.toml.example
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
 # Logs
 *.log
