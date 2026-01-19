@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from difflib import SequenceMatcher
 from urllib import request, error
-from dotenv import load_dotenv
 
 # Advanced AI/ML Imports
 from sklearn.feature_extraction.text import TfidfVectorizer
