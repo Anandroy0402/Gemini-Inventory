@@ -10,8 +10,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from difflib import SequenceMatcher
-from urllib import request, error
-from dotenv import load_dotenv
+
+# --- NEW 2026 SDK IMPORT ---
+from google import genai
+from google.genai import types
 
 # Advanced AI/ML Imports
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -24,42 +26,23 @@ import plotly.graph_objects as go
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="AI Inventory Auditor Pro", layout="wide", page_icon="🛡️")
 
-# Load environment variables from .env file
-load_dotenv()
-
-# --- FIXED SECRETS MANAGEMENT ---
-# Replaced fragile file reading with robust native Streamlit secrets
-
+# --- CONFIGURATION & SECRET MANAGEMENT ---
 def get_config_value(key):
     """
     Unified configuration loader.
-    Checks in order:
-    1. OS Environment Variables (Docker/Cloud)
-    2. Streamlit Secrets (Native .streamlit/secrets.toml)
+    Checks in order: OS Env Vars -> Streamlit Secrets
     """
-    # 1. Check OS Environment
     val = os.getenv(key)
     if val is not None:
         return val
-        
-    # 2. Check Streamlit Secrets
     try:
-        # Check root level
         if key in st.secrets:
             return st.secrets[key]
-        # Check nested sections (e.g. if you have [gcp] section)
-        for section in st.secrets:
-            if isinstance(st.secrets[section], dict) and key in st.secrets[section]:
-                return st.secrets[section][key]
     except (FileNotFoundError, AttributeError):
         pass
-        
     return None
 
 def resolve_bool_setting(key, default=False):
-    """
-    Resolve a boolean setting from environment variables or secrets.
-    """
     value = get_config_value(key)
     if value is None:
         return default
@@ -69,31 +52,25 @@ def resolve_bool_setting(key, default=False):
 
 # --- KNOWLEDGE BASE: DOMAIN LOGIC ---
 DEFAULT_PRODUCT_GROUP = "Consumables & General"
-MIN_DISTANCE_THRESHOLD = 1e-8  
-COMPARISON_WINDOW_SIZE = 50 
+MIN_DISTANCE_THRESHOLD = 1e-8
+COMPARISON_WINDOW_SIZE = 50
 FUZZY_SIMILARITY_THRESHOLD = 0.85
 SEMANTIC_SIMILARITY_THRESHOLD = 0.9
 GEMINI_BATCH_SIZE = 16
-GEMINI_CLASSIFICATION_MODEL = "gemini-2.5-flash"   # Faster, smarter, current standard
-GEMINI_EMBEDDING_MODEL = "text-embedding-005"      # The active successor
-GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-GEMINI_API_HOSTNAME = "generativelanguage.googleapis.com"
-GEMINI_API_TIMEOUT = 30
+
+# --- UPDATED MODELS (2026 Standards) ---
+GEMINI_CLASSIFICATION_MODEL = "gemini-2.0-flash" 
+GEMINI_EMBEDDING_MODEL = "text-embedding-004" 
+
 ENABLE_GEMINI_MODELS = resolve_bool_setting("ENABLE_GEMINI_MODELS", default=False)
 GEMINI_CONFIDENCE_MIN_THRESHOLD = 0.8
 GEMINI_CONFIDENCE_MIN_TARGET = 0.6
 GEMINI_CONFIDENCE_MAX_TARGET = 0.98
-GEMINI_CONNECTION_CACHE_TTL = 30
-GEMINI_CONNECTION_TEST_TEXT = "Inventory audit connection check."
-GEMINI_MAX_RETRIES = 2 
-GEMINI_RETRY_DELAY = 2 
-GEMINI_MAX_RETRY_DELAY = 10 
-GEMINI_API_KEY_MIN_LENGTH = 20 
-GEMINI_MAX_WORKERS = 2
-GEMINI_REQUEST_DELAY = 0.1 
-GEMINI_LABEL_SIMILARITY_THRESHOLD = 0.8 
-GEMINI_API_KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+GEMINI_CONNECTION_CACHE_TTL = 60
+GEMINI_MAX_WORKERS = 4 
 GEMINI_REQUEST_SEMAPHORE = threading.Semaphore(GEMINI_MAX_WORKERS)
+GEMINI_API_KEY_MIN_LENGTH = 20
+GEMINI_API_HOSTNAME = "generativelanguage.googleapis.com"
 
 PRODUCT_GROUPS = {
     "Piping & Fittings": ["FLANGE", "PIPE", "ELBOW", "TEE", "UNION", "REDUCER", "BEND", "COUPLING", "NIPPLE", "BUSHING", "UPVC", "CPVC", "PVC"],
@@ -111,7 +88,7 @@ SPEC_TRAPS = {
     "Rating": ["150#", "300#", "600#", "PN10", "PN16", "PN25", "PN40"]
 }
 
-# --- AI UTILITIES ---
+# --- AI UTILITIES (ORIGINAL LOGIC PRESERVED) ---
 def clean_description(text):
     text = str(text).upper().replace('"', ' ')
     text = text.replace("O-RING", "O RING")
@@ -123,6 +100,10 @@ def token_pattern(token):
     return rf'(?<!\w){re.escape(token)}(?!\w)'
 
 def get_tech_dna(text):
+    """
+    Extracts 'Genetic Markers' of an item (Numbers, Attributes).
+    Used to distinguish Variants from Duplicates.
+    """
     text = clean_description(text)
     dna = {"numbers": set(re.findall(r'\d+(?:[./]\d+)?', text)), "attributes": {}}
     for cat, keywords in SPEC_TRAPS.items():
@@ -173,6 +154,9 @@ def normalize_confidence_scores(scores):
     return (scaled * (GEMINI_CONFIDENCE_MAX_TARGET - GEMINI_CONFIDENCE_MIN_TARGET) + GEMINI_CONFIDENCE_MIN_TARGET).round(4)
 
 def build_fuzzy_duplicates(df, id_col):
+    """
+    Identifies fuzzy duplicates but uses Tech DNA to override false positives as 'Variants'.
+    """
     fuzzy_list = []
     recs = df.to_dict('records')
     for i in range(len(recs)):
@@ -184,6 +168,7 @@ def build_fuzzy_duplicates(df, id_col):
             if sim > FUZZY_SIMILARITY_THRESHOLD:
                 dna1 = r1.get('Tech_DNA') or {'numbers': set(), 'attributes': {}}
                 dna2 = r2.get('Tech_DNA') or {'numbers': set(), 'attributes': {}}
+                # Logic: If high text match but different numbers/attributes -> Variant, not Duplicate
                 is_variant = (dna1['numbers'] != dna2['numbers']) or (dna1['attributes'] != dna2['attributes'])
                 fuzzy_list.append({
                     'ID A': r1[id_col], 'ID B': r2[id_col],
@@ -192,8 +177,9 @@ def build_fuzzy_duplicates(df, id_col):
                 })
     return fuzzy_list
 
+# --- GEMINI CONNECTIVITY (REFACTORED FOR GOOGLE-GENAI SDK) ---
+
 def get_gemini_api_key():
-    """Retrieves API key from unified config loader"""
     keys_to_check = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
     for key in keys_to_check:
         val = get_config_value(key)
@@ -201,15 +187,191 @@ def get_gemini_api_key():
             return str(val).strip()
     return None
 
-def validate_gemini_api_key(api_key):
+def get_gemini_client():
+    """Initializes the new Google GenAI Client."""
+    api_key = get_gemini_api_key()
     if not api_key:
-        return False
-    api_key = str(api_key).strip()
-    if len(api_key) < GEMINI_API_KEY_MIN_LENGTH:
-        return False
-    if any(ord(char) < 32 for char in api_key):
-        return False
-    return bool(GEMINI_API_KEY_PATTERN.search(api_key))
+        return None
+    try:
+        # The new SDK uses a Client instance
+        return genai.Client(api_key=api_key)
+    except Exception:
+        return None
+
+def normalize_gemini_label(label, labels):
+    if not label: return None
+    label_text = str(label).strip().lower()
+    lowered_labels = [(c, c.lower()) for c in labels]
+    best_match = None
+    best_sim = 0.0
+    for cand, cand_text in lowered_labels:
+        if label_text == cand_text: return cand
+        sim = SequenceMatcher(None, label_text, cand_text).ratio()
+        if sim >= GEMINI_LABEL_SIMILARITY_THRESHOLD and sim > best_sim:
+            best_sim = sim
+            best_match = cand
+    return best_match
+
+def extract_json_from_text(text):
+    if not text: return None
+    cleaned = re.sub(r"```(?:json)?", "", text.strip(), flags=re.IGNORECASE).strip()
+    try:
+        start = cleaned.index("{")
+        end = cleaned.rindex("}") + 1
+        return json.loads(cleaned[start:end])
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+def build_gemini_prompt(text, labels):
+    labels_text = ", ".join(labels)
+    return (
+        "You are classifying an industrial inventory item. "
+        f"Choose the single best category from this list: {labels_text}. "
+        "Respond only with JSON in the form "
+        '{"label": "<category>", "confidence": <number between 0 and 1>}. '
+        f"Item: {text}"
+    )
+
+def run_gemini_classification(texts, labels):
+    client = get_gemini_client()
+    if not client:
+        st.warning("Gemini API key missing; skipping hosted classification.")
+        return None
+    
+    if isinstance(texts, str): texts = [texts]
+    if not texts: return None
+    
+    max_workers = min(GEMINI_MAX_WORKERS, GEMINI_BATCH_SIZE, len(texts))
+    
+    def classify_text(text):
+        prompt = build_gemini_prompt(text, labels)
+        with GEMINI_REQUEST_SEMAPHORE:
+            time.sleep(0.1) # Rate limit protection
+            try:
+                # NEW SDK SYNTAX: client.models.generate_content
+                response = client.models.generate_content(
+                    model=GEMINI_CLASSIFICATION_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.0,
+                        max_output_tokens=128
+                    )
+                )
+                payload = extract_json_from_text(response.text)
+                
+                label = None
+                confidence = 0.0
+                if isinstance(payload, dict):
+                    label = payload.get("label") or payload.get("category")
+                    confidence = payload.get("confidence", 0.0)
+                
+                label = normalize_gemini_label(label, labels)
+                if not label: return None
+                return {"labels": [label], "scores": [max(0.0, min(float(confidence), 1.0))]}
+                
+            except Exception as e:
+                return None
+
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(executor.map(classify_text, texts))
+        if all(r is None for r in results):
+            return None
+        return results
+    except Exception as exc:
+        st.warning(f"Gemini classification failed: {exc}")
+        return None
+
+def compute_embeddings(texts):
+    client = get_gemini_client()
+    if not client:
+        st.warning("Gemini API key missing; skipping hosted embeddings.")
+        return None
+    if not texts: return None
+    
+    max_workers = min(GEMINI_MAX_WORKERS, GEMINI_BATCH_SIZE, len(texts))
+    
+    def embed_text(text):
+        with GEMINI_REQUEST_SEMAPHORE:
+            time.sleep(0.1)
+            try:
+                # NEW SDK SYNTAX: client.models.embed_content
+                result = client.models.embed_content(
+                    model=GEMINI_EMBEDDING_MODEL,
+                    contents=text,
+                    config=types.EmbedContentConfig(
+                        task_type="CLUSTERING"
+                    )
+                )
+                # Ensure we handle the response object correctly
+                if hasattr(result, 'embeddings') and result.embeddings:
+                     return result.embeddings[0].values
+                return None
+            except Exception:
+                return None
+            
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            embeddings = list(executor.map(embed_text, texts))
+        
+        if any(e is None for e in embeddings):
+            st.warning("Embedding generation partial failure; using TF-IDF.")
+            return None
+            
+        embeddings = np.array(embeddings, dtype=float)
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms[norms == 0] = 1
+        return embeddings / norms
+    except Exception as exc:
+        st.warning(f"Embedding generation failed: {exc}")
+        return None
+
+@st.cache_data(ttl=GEMINI_CONNECTION_CACHE_TTL)
+def test_gemini_inference_connection(enable_gemini_models):
+    """
+    Test connection using the SDK native methods.
+    """
+    if not enable_gemini_models:
+        return {"enabled": False, "classification": False, "embeddings": False, "reason": "disabled", "status": "disabled", "error_detail": None}
+    
+    client = get_gemini_client()
+    if not client:
+        return {"enabled": False, "reason": "missing_key", "status": "missing_key", "error_detail": "No API key found"}
+
+    # 1. Test Connectivity (Basic Generation)
+    cls_ok = False
+    try:
+        resp = client.models.generate_content(
+            model=GEMINI_CLASSIFICATION_MODEL,
+            contents="Ping",
+            config=types.GenerateContentConfig(max_output_tokens=5)
+        )
+        if resp.text: cls_ok = True
+    except Exception as e:
+        error_msg = str(e)
+        cls_ok = False
+    
+    # 2. Test Embeddings
+    emb_ok = False
+    try:
+        res = client.models.embed_content(
+            model=GEMINI_EMBEDDING_MODEL,
+            contents="Ping"
+        )
+        if hasattr(res, 'embeddings') and res.embeddings: emb_ok = True
+    except Exception:
+        emb_ok = False
+    
+    status = "full" if (cls_ok and emb_ok) else ("partial" if (cls_ok or emb_ok) else "unavailable")
+    
+    return {
+        "enabled": status in {"full", "partial"},
+        "classification": cls_ok,
+        "embeddings": emb_ok,
+        "reason": None,
+        "status": status,
+        "error_detail": "Models unresponsive" if status == "unavailable" else None
+    }
 
 def check_dns_resolution(hostname):
     try:
@@ -217,7 +379,7 @@ def check_dns_resolution(hostname):
         return True
     except (socket.gaierror, socket.herror, OSError):
         return False
-
+        
 def check_gemini_api_connectivity():
     hostname = GEMINI_API_HOSTNAME
     if not check_dns_resolution(hostname):
@@ -242,292 +404,14 @@ def check_gemini_api_connectivity():
                 sock.close()
             except Exception:
                 pass
-
-def call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings=True, retry_count=0):
-    if not api_key:
-        return None
+                
+def validate_gemini_api_key(api_key):
+    if not api_key: return False
     api_key = str(api_key).strip()
-    if not validate_gemini_api_key(api_key):
-        if show_warnings:
-            st.warning(f"{warning_message}: Invalid API key format")
-        return None
-    
-    data = json.dumps(payload).encode("utf-8")
-    req = request.Request(
-        f"{GEMINI_API_BASE_URL}/{endpoint}",
-        data=data,
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key}
-    )
-    
-    try:
-        with request.urlopen(req, timeout=GEMINI_API_TIMEOUT) as response:
-            result = json.loads(response.read().decode("utf-8"))
-        if isinstance(result, dict) and result.get("error"):
-            if show_warnings:
-                st.warning(f"{warning_message}: API returned error - {result['error'].get('message', 'Unknown')}")
-            return None
-        return result
-        
-    except error.HTTPError as exc:
-        is_retryable = exc.code in {429, 500, 502, 503}
-        if is_retryable and retry_count < GEMINI_MAX_RETRIES:
-            delay = min(GEMINI_RETRY_DELAY * (2 ** retry_count), GEMINI_MAX_RETRY_DELAY)
-            time.sleep(delay)
-            return call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings, retry_count + 1)
-        if show_warnings:
-            st.warning(f"{warning_message}: HTTP {exc.code} - {exc.reason}")
-        return None
-        
-    except (error.URLError, socket.timeout) as exc:
-        if isinstance(exc, socket.timeout) and retry_count < GEMINI_MAX_RETRIES:
-             delay = min(GEMINI_RETRY_DELAY * (2 ** retry_count), GEMINI_MAX_RETRY_DELAY)
-             time.sleep(delay)
-             return call_gemini_api(endpoint, payload, api_key, warning_message, show_warnings, retry_count + 1)
-        if show_warnings:
-            st.warning(f"{warning_message}: Network Error - {str(exc)}")
-        return None
-    except ValueError as exc:
-        if show_warnings:
-            st.warning(f"{warning_message}: Invalid JSON response - {exc}")
-        return None
+    if len(api_key) < GEMINI_API_KEY_MIN_LENGTH: return False
+    return bool(GEMINI_API_KEY_PATTERN.search(api_key))
 
-def extract_json_from_text(text):
-    if not text: return None
-    cleaned = re.sub(r"```(?:json)?", "", text.strip(), flags=re.IGNORECASE).strip()
-    try:
-        start = cleaned.index("{")
-        end = cleaned.rindex("}") + 1
-        return json.loads(cleaned[start:end])
-    except (ValueError, json.JSONDecodeError):
-        return None
-
-def normalize_gemini_label(label, labels):
-    if not label: return None
-    label_text = str(label).strip().lower()
-    lowered_labels = [(c, c.lower()) for c in labels]
-    best_match = None
-    best_sim = 0.0
-    for cand, cand_text in lowered_labels:
-        if label_text == cand_text: return cand
-        sim = SequenceMatcher(None, label_text, cand_text).ratio()
-        if sim >= GEMINI_LABEL_SIMILARITY_THRESHOLD and sim > best_sim:
-            best_sim = sim
-            best_match = cand
-    return best_match
-
-def parse_gemini_classification_response(response_text, labels):
-    payload = extract_json_from_text(response_text)
-    label = None
-    confidence = 0.0
-    if isinstance(payload, dict):
-        label = payload.get("label") or payload.get("category") or payload.get("product_group")
-        confidence = payload.get("confidence", payload.get("score", 0.0))
-    elif response_text:
-        label = response_text.strip()
-    
-    label = normalize_gemini_label(label, labels)
-    if not label: return None
-    try:
-        confidence = float(confidence)
-    except (TypeError, ValueError):
-        confidence = 0.0
-    return {"labels": [label], "scores": [max(0.0, min(confidence, 1.0))]}
-
-def call_gemini_generate(prompt, api_key, warning_message, show_warnings=True):
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 128}
-    }
-    result = call_gemini_api(f"models/{GEMINI_CLASSIFICATION_MODEL}:generateContent", payload, api_key, warning_message, show_warnings)
-    if not result: return None
-    try:
-        parts = result["candidates"][0]["content"]["parts"]
-        return "".join(p.get("text", "") for p in parts).strip()
-    except (KeyError, IndexError):
-        return None
-
-def call_gemini_embedding(text, api_key, warning_message, show_warnings=True):
-    payload = {"content": {"parts": [{"text": text}]}}
-    result = call_gemini_api(f"models/{GEMINI_EMBEDDING_MODEL}:embedContent", payload, api_key, warning_message, show_warnings)
-    if not result: return None
-    try:
-        return result["embedding"]["values"]
-    except (KeyError, IndexError):
-        return None
-
-def build_gemini_prompt(text, labels):
-    labels_text = ", ".join(labels)
-    return (
-        "You are classifying an industrial inventory item. "
-        f"Choose the single best category from this list: {labels_text}. "
-        "Respond only with JSON in the form "
-        '{"label": "<category>", "confidence": <number between 0 and 1>}. '
-        f"Item: {text}"
-    )
-
-def run_gemini_classification(texts, labels):
-    api_key = get_gemini_api_key()
-    if not api_key:
-        st.warning("Gemini API key missing; skipping hosted classification.")
-        return None
-    if isinstance(texts, str): texts = [texts]
-    if not texts: return None
-    
-    max_workers = min(GEMINI_MAX_WORKERS, GEMINI_BATCH_SIZE, len(texts))
-    def classify_text(text):
-        prompt = build_gemini_prompt(text, labels)
-        with GEMINI_REQUEST_SEMAPHORE:
-            time.sleep(GEMINI_REQUEST_DELAY)
-            resp = call_gemini_generate(prompt, api_key, "Gemini classification failed", show_warnings=False)
-        return parse_gemini_classification_response(resp, labels)
-        
-    try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = list(executor.map(classify_text, texts))
-        if any(r is None for r in results):
-            st.warning("Gemini classification failed; using existing categories.")
-            return None
-        return results
-    except Exception as exc:
-        st.warning(f"Gemini classification failed: {exc}")
-        return None
-
-def compute_embeddings(texts):
-    api_key = get_gemini_api_key()
-    if not api_key:
-        st.warning("Gemini API key missing; skipping hosted embeddings.")
-        return None
-    if not texts: return None
-    
-    max_workers = min(GEMINI_MAX_WORKERS, GEMINI_BATCH_SIZE, len(texts))
-    def embed_text(text):
-        with GEMINI_REQUEST_SEMAPHORE:
-            time.sleep(GEMINI_REQUEST_DELAY)
-            return call_gemini_embedding(text, api_key, "Embedding generation failed", show_warnings=False)
-            
-    try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            embeddings = list(executor.map(embed_text, texts))
-        if any(e is None for e in embeddings):
-            st.warning("Embedding generation failed; falling back to TF-IDF signals.")
-            return None
-        embeddings = np.array(embeddings, dtype=float)
-        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        norms[norms == 0] = 1
-        return embeddings / norms
-    except Exception as exc:
-        st.warning(f"Embedding generation failed: {exc}")
-        return None
-
-@st.cache_data(ttl=GEMINI_CONNECTION_CACHE_TTL)
-def test_gemini_inference_connection(enable_gemini_models):
-    """
-    Test connection to Gemini API with comprehensive diagnostics.
-    Returns a dict with connection status and detailed error information.
-    """
-    if not enable_gemini_models:
-        return {
-            "enabled": False,
-            "classification": False,
-            "embeddings": False,
-            "reason": "disabled",
-            "status": "disabled",
-            "error_detail": None
-        }
-    
-    # Check if API key exists
-    api_key = get_gemini_api_key()
-    if not api_key:
-        return {
-            "enabled": False,
-            "classification": False,
-            "embeddings": False,
-            "reason": "missing_key",
-            "status": "missing_key",
-            "error_detail": "No Gemini API key found in environment or secrets"
-        }
-    
-    # Validate API key format
-    if not validate_gemini_api_key(api_key):
-        return {
-            "enabled": False,
-            "classification": False,
-            "embeddings": False,
-            "reason": "invalid_key",
-            "status": "invalid_key",
-            "error_detail": f"API key format is invalid (should be at least {GEMINI_API_KEY_MIN_LENGTH} characters)"
-        }
-    
-    # Check network connectivity to Gemini API
-    is_accessible, conn_error = check_gemini_api_connectivity()
-    if not is_accessible:
-        error_details = {
-            "dns_resolution_failed": f"Cannot resolve {GEMINI_API_HOSTNAME} - May be blocked by firewall or network policy",
-            "connection_timeout": "Connection timeout - Network may be slow or API unreachable",
-            "connection_refused": "Connection refused - Service may be down or blocked",
-        }
-        error_detail = error_details.get(conn_error, f"Network connectivity issue: {conn_error}")
-        
-        return {
-            "enabled": False,
-            "classification": False,
-            "embeddings": False,
-            "reason": "network_unreachable",
-            "status": "network_unreachable",
-            "error_detail": error_detail,
-            "connectivity_error": conn_error
-        }
-    
-    # Test classification model
-    test_text = GEMINI_CONNECTION_TEST_TEXT
-    prompt = build_gemini_prompt(test_text, list(PRODUCT_GROUPS.keys()))
-    classification_text = call_gemini_generate(
-        prompt,
-        api_key,
-        "Gemini classification test failed",
-        show_warnings=False
-    )
-    classification_result = parse_gemini_classification_response(classification_text, list(PRODUCT_GROUPS.keys()))
-    classification_ok = (classification_result is not None) and (isinstance(classification_result.get('labels'), list))
-    
-    # Test embedding model
-    embedding_result = call_gemini_embedding(
-        test_text,
-        api_key,
-        "Gemini embedding test failed",
-        show_warnings=False
-    )
-    embedding_ok = isinstance(embedding_result, list) and len(embedding_result) > 0
-    
-    # Determine overall status
-    if classification_ok and embedding_ok:
-        status = "full"
-        error_detail = None
-    elif classification_ok or embedding_ok:
-        status = "partial"
-        failed_models = []
-        if not classification_ok:
-            failed_models.append("classification")
-        if not embedding_ok:
-            failed_models.append("embeddings")
-        error_detail = f"Some models unavailable: {', '.join(failed_models)}"
-    else:
-        status = "unavailable"
-        error_detail = "Both classification and embedding models failed to respond"
-    
-    enabled = status in {"full", "partial"}
-    reason = None if enabled else "inference_test_failed"
-    
-    return {
-        "enabled": enabled,
-        "classification": classification_ok,
-        "embeddings": embedding_ok,
-        "reason": reason,
-        "status": status,
-        "error_detail": error_detail
-    }
-
-# --- MAIN ENGINE ---
+# --- MAIN ENGINE (ORIGINAL LOGIC PRESERVED) ---
 @st.cache_data
 def run_intelligent_audit(file_path, enable_gemini_classification=False, enable_gemini_embeddings=False):
     df = pd.read_csv(file_path, encoding='latin1')
@@ -555,7 +439,7 @@ def run_intelligent_audit(file_path, enable_gemini_classification=False, enable_
     
     # Anomaly
     iso = IsolationForest(contamination=0.04, random_state=42)
-    df['Anomaly_Flag'] = iso.fit_predict(tfidf_matrix) # Using tfidf for complexity-based anomalies
+    df['Anomaly_Flag'] = iso.fit_predict(tfidf_matrix)
 
     standard_desc = df['Standard_Desc'].tolist() if enable_gemini_embeddings else None
     gemini_inputs = (
@@ -649,26 +533,6 @@ elif gemini_status["reason"] == "missing_key":
                "- Create a Gemini API key in Google AI Studio\n"
                "- Set via environment variable: `GEMINI_API_KEY=your_key`\n"
                "- Or add to `.streamlit/secrets.toml`: `GEMINI_API_KEY = \"your_key\"`")
-
-elif gemini_status["reason"] == "invalid_key":
-    st.warning("⚠️ **Gemini API key format is invalid.** Using local signals instead.\n\n"
-               f"Details: {gemini_status.get('error_detail', 'API key validation failed')}\n\n"
-               "Valid keys should:\n"
-               f"- Be at least {GEMINI_API_KEY_MIN_LENGTH} characters long\n"
-               "- Obtain from Google AI Studio")
-
-elif gemini_status["reason"] == "network_unreachable":
-    st.error("🚫 **Cannot reach Gemini API.** Using local signals instead.\n\n"
-             f"**Issue:** {gemini_status.get('error_detail', 'Network connectivity problem')}\n\n"
-             "**Possible causes:**\n"
-             f"- Corporate firewall blocking {GEMINI_API_HOSTNAME}\n"
-             "- Network policy restrictions\n"
-             "- DNS resolution issues\n"
-             "- Internet connectivity problems\n\n"
-             "**Resolution:**\n"
-             f"- Contact your network administrator to whitelist {GEMINI_API_HOSTNAME}\n"
-             "- Check your network/firewall settings\n"
-             "- Verify internet connectivity")
 
 else:
     # Generic failure
@@ -926,7 +790,6 @@ with page[3]:
         st.markdown("### Configuration")
         st.markdown(f"**ENABLE_GEMINI_MODELS:** `{ENABLE_GEMINI_MODELS}`")
         st.markdown(f"**GEMINI_API_BASE_URL:** `{GEMINI_API_BASE_URL}`")
-        st.markdown(f"**GEMINI_API_TIMEOUT:** `{GEMINI_API_TIMEOUT}s`")
         st.markdown(f"**Models:**")
         st.markdown(f"- Classification: `{GEMINI_CLASSIFICATION_MODEL}`")
         st.markdown(f"- Embeddings: `{GEMINI_EMBEDDING_MODEL}`")
