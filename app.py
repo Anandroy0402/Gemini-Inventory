@@ -7,6 +7,10 @@ import json
 import socket
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 try:
     import tomllib
 except ImportError:
