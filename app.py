@@ -857,7 +857,7 @@ with page[3]:
         st.markdown("---")
         st.markdown("### Configuration")
         st.markdown(f"**ENABLE_GEMINI_MODELS:** `{ENABLE_GEMINI_MODELS}`")
-        st.markdown(f"**GEMINI_API_BASE_URL:** `{GEMINI_API_BASE_URL}`")
+        # REMOVED: GEMINI_API_BASE_URL (Not used by SDK)
         st.markdown(f"**Models:**")
         st.markdown(f"- Classification: `{GEMINI_CLASSIFICATION_MODEL}`")
         st.markdown(f"- Embeddings: `{GEMINI_EMBEDDING_MODEL}`")
